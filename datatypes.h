@@ -409,6 +409,14 @@ typedef struct {
 	float l_temp_motor_start;
 	float l_temp_motor_end;
 	float l_temp_accel_dec;
+	
+	// Enhanced thermal management for hub motors
+	float l_temp_motor_hub_start;		// Hub motor thermal derating start temperature
+	float l_temp_motor_hub_end;			// Hub motor thermal derating end temperature
+	float l_temp_motor_hub_aggressive_start;	// Aggressive derating start temperature
+	float l_temp_motor_hub_aggressive_end;		// Aggressive derating end temperature
+	float l_temp_motor_hub_power_scale;		// Power scaling factor for hub motors
+	bool l_temp_motor_hub_adaptive_enable;	// Enable adaptive thermal management
 	float l_min_duty;
 	float l_max_duty;
 	float l_watt_max;

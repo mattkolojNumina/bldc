@@ -801,6 +801,175 @@ void mc_interface_set_handbrake_rel(float val) {
 	mc_interface_set_handbrake(val * fabsf(motor_now()->m_conf.lo_current_min));
 }
 
+/**
+ * Applies brakes by shorting the motor phases at low RPM,
+ * or falls back to normal current braking at high RPM.
+ *
+ * @param current
+ * The brake current to use.
+ */
+void mc_interface_brake_by_shorting_phases(float current) {
+	if (mc_interface_try_input()) {
+		return;
+	}
+	if (motor_now()->m_conf.motor_type != MOTOR_TYPE_FOC) {
+		return;
+	}
+	if ((current != 0) && (fabsf(mc_interface_get_rpm()) < 2000)) {
+		mcpwm_foc_brake_by_shorting_phases();
+	}
+	else {
+		// fall back to safe alternative when the wheel is spinning
+		mc_interface_set_brake_current(current);
+	}
+}
+
+// Enhanced thermal management for hub motors
+static float m_hub_motor_thermal_factor = 1.0;
+static bool m_hub_motor_thermal_limit_active = false;
+
+// Telemetry data for thermal monitoring
+static thermal_telemetry_t m_thermal_telemetry = {
+	.motor_thermal_factor = 1.0,
+	.fet_thermal_factor = 1.0,
+	.hub_scaling_factor = 1.0,
+	.combined_thermal_factor = 1.0,
+	.thermal_limit_active = false,
+	.temp_motor = 0.0,
+	.temp_fet = 0.0,
+	.power_watts = 0.0,
+	.rpm = 0.0,
+	.duty_cycle = 0.0
+};
+
+/**
+ * Get the current hub motor thermal derating factor
+ * @return Thermal derating factor (0.0 to 1.0)
+ */
+float mc_interface_get_hub_motor_thermal_factor(void) {
+	return m_hub_motor_thermal_factor;
+}
+
+/**
+ * Check if hub motor thermal limiting is active
+ * @return True if thermal limiting is active
+ */
+bool mc_interface_is_hub_motor_thermal_limit_active(void) {
+	return m_hub_motor_thermal_limit_active;
+}
+
+/**
+ * Update hub motor thermal management calculations
+ * Should be called periodically from the main control loop
+ */
+void mc_interface_update_hub_motor_thermal_management(void) {
+	volatile motor_all_state_t *motor = motor_now();
+	const mc_configuration *conf = &motor->m_conf;
+	
+	// Skip if hub motor thermal management is disabled
+	if (!conf->l_temp_motor_hub_adaptive_enable) {
+		m_hub_motor_thermal_factor = 1.0;
+		m_hub_motor_thermal_limit_active = false;
+		return;
+	}
+	
+	float temp_motor = mc_interface_temp_motor_filtered();
+	float temp_fet = mc_interface_temp_fet_filtered();
+	float rpm = mc_interface_get_rpm();
+	float duty = mc_interface_get_duty_cycle_now();
+	
+	// Calculate thermal derating factors
+	float motor_thermal_factor = 1.0;
+	float fet_thermal_factor = 1.0;
+	
+	// Motor temperature derating - multi-stage approach
+	if (temp_motor > conf->l_temp_motor_hub_start) {
+		if (temp_motor < conf->l_temp_motor_hub_end) {
+			// Linear derating in normal range
+			motor_thermal_factor = utils_map(temp_motor, 
+				conf->l_temp_motor_hub_start, conf->l_temp_motor_hub_end, 
+				1.0, 0.3);
+		} else if (temp_motor < conf->l_temp_motor_hub_aggressive_start) {
+			// Maintain minimal power
+			motor_thermal_factor = 0.3;
+		} else if (temp_motor < conf->l_temp_motor_hub_aggressive_end) {
+			// Aggressive derating
+			motor_thermal_factor = utils_map(temp_motor, 
+				conf->l_temp_motor_hub_aggressive_start, conf->l_temp_motor_hub_aggressive_end, 
+				0.3, 0.05);
+		} else {
+			// Emergency minimal power
+			motor_thermal_factor = 0.05;
+		}
+	}
+	
+	// FET temperature derating (existing logic enhanced)
+	if (temp_fet > conf->l_temp_fet_start) {
+		if (temp_fet < conf->l_temp_fet_end) {
+			fet_thermal_factor = utils_map(temp_fet, 
+				conf->l_temp_fet_start, conf->l_temp_fet_end, 
+				1.0, 0.1);
+		} else {
+			fet_thermal_factor = 0.1;
+		}
+	}
+	
+	// Hub motor specific considerations
+	float hub_scaling_factor = 1.0;
+	
+	// High speed thermal scaling for hub motors
+	if (fabsf(rpm) > 1000) {
+		float speed_factor = utils_map(fabsf(rpm), 1000, 4000, 1.0, 0.85);
+		hub_scaling_factor *= speed_factor;
+	}
+	
+	// High duty cycle thermal scaling
+	if (fabsf(duty) > 0.7) {
+		float duty_factor = utils_map(fabsf(duty), 0.7, 0.95, 1.0, 0.8);
+		hub_scaling_factor *= duty_factor;
+	}
+	
+	// Power-based thermal management
+	float power = mc_interface_get_input_voltage_filtered() * fabsf(mc_interface_get_tot_current_in_filtered());
+	if (power > 500.0) {  // Above 500W, start thermal management
+		float power_factor = utils_map(power, 500.0, 1500.0, 1.0, conf->l_temp_motor_hub_power_scale);
+		hub_scaling_factor *= power_factor;
+	}
+	
+	// Combine all factors
+	m_hub_motor_thermal_factor = motor_thermal_factor * fet_thermal_factor * hub_scaling_factor;
+	
+	// Apply minimum threshold
+	if (m_hub_motor_thermal_factor < 0.05) {
+		m_hub_motor_thermal_factor = 0.05;
+	}
+	
+	// Update thermal limiting status
+	m_hub_motor_thermal_limit_active = (m_hub_motor_thermal_factor < 0.95);
+	
+	// Update telemetry data
+	m_thermal_telemetry.motor_thermal_factor = motor_thermal_factor;
+	m_thermal_telemetry.fet_thermal_factor = fet_thermal_factor;
+	m_thermal_telemetry.hub_scaling_factor = hub_scaling_factor;
+	m_thermal_telemetry.combined_thermal_factor = m_hub_motor_thermal_factor;
+	m_thermal_telemetry.thermal_limit_active = m_hub_motor_thermal_limit_active;
+	m_thermal_telemetry.temp_motor = temp_motor;
+	m_thermal_telemetry.temp_fet = temp_fet;
+	m_thermal_telemetry.power_watts = power;
+	m_thermal_telemetry.rpm = rpm;
+	m_thermal_telemetry.duty_cycle = duty;
+}
+
+/**
+ * Get thermal telemetry data for monitoring
+ * @param telemetry Pointer to thermal_telemetry_t structure to fill
+ */
+void mc_interface_get_thermal_telemetry(thermal_telemetry_t *telemetry) {
+	if (telemetry != NULL) {
+		*telemetry = m_thermal_telemetry;
+	}
+}
+
 void mc_interface_set_openloop_current(float current, float rpm) {
 	if (fabsf(current) > 0.001) {
 		SHUTDOWN_RESET();
@@ -2507,6 +2676,13 @@ static void update_override_limits(volatile motor_if_state_t *motor, volatile mc
 		lo_min = -conf->cc_min_current;
 	}
 
+	// Apply hub motor thermal scaling
+	float hub_thermal_factor = mc_interface_get_hub_motor_thermal_factor();
+	if (hub_thermal_factor < 1.0) {
+		lo_max *= hub_thermal_factor;
+		lo_min *= hub_thermal_factor;
+	}
+	
 	conf->lo_current_max = lo_max;
 	conf->lo_current_min = lo_min;
 }

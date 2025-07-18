@@ -38,6 +38,14 @@ int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *
 	buffer[ind++] = (uint8_t)conf->l_temp_motor_start;
 	buffer[ind++] = (uint8_t)conf->l_temp_motor_end;
 	buffer_append_float16(buffer, conf->l_temp_accel_dec, 10000, &ind);
+	
+	// Enhanced thermal management for hub motors
+	buffer[ind++] = (uint8_t)conf->l_temp_motor_hub_start;
+	buffer[ind++] = (uint8_t)conf->l_temp_motor_hub_end;
+	buffer[ind++] = (uint8_t)conf->l_temp_motor_hub_aggressive_start;
+	buffer[ind++] = (uint8_t)conf->l_temp_motor_hub_aggressive_end;
+	buffer_append_float16(buffer, conf->l_temp_motor_hub_power_scale, 10000, &ind);
+	buffer[ind++] = conf->l_temp_motor_hub_adaptive_enable;
 	buffer_append_float16(buffer, conf->l_min_duty, 10000, &ind);
 	buffer_append_float16(buffer, conf->l_max_duty, 10000, &ind);
 	buffer_append_float32_auto(buffer, conf->l_watt_max, &ind);
@@ -378,6 +386,14 @@ bool confgenerator_deserialize_mcconf(const uint8_t *buffer, mc_configuration *c
 	conf->l_temp_motor_start = buffer[ind++];
 	conf->l_temp_motor_end = buffer[ind++];
 	conf->l_temp_accel_dec = buffer_get_float16(buffer, 10000, &ind);
+	
+	// Enhanced thermal management for hub motors
+	conf->l_temp_motor_hub_start = buffer[ind++];
+	conf->l_temp_motor_hub_end = buffer[ind++];
+	conf->l_temp_motor_hub_aggressive_start = buffer[ind++];
+	conf->l_temp_motor_hub_aggressive_end = buffer[ind++];
+	conf->l_temp_motor_hub_power_scale = buffer_get_float16(buffer, 10000, &ind);
+	conf->l_temp_motor_hub_adaptive_enable = buffer[ind++];
 	conf->l_min_duty = buffer_get_float16(buffer, 10000, &ind);
 	conf->l_max_duty = buffer_get_float16(buffer, 10000, &ind);
 	conf->l_watt_max = buffer_get_float32_auto(buffer, &ind);
@@ -714,6 +730,38 @@ void confgenerator_set_defaults_mcconf(mc_configuration *conf) {
 	conf->l_temp_motor_start = MCCONF_L_LIM_TEMP_MOTOR_START;
 	conf->l_temp_motor_end = MCCONF_L_LIM_TEMP_MOTOR_END;
 	conf->l_temp_accel_dec = MCCONF_L_LIM_TEMP_ACCEL_DEC;
+	
+	// Enhanced thermal management for hub motors
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_START
+	conf->l_temp_motor_hub_start = MCCONF_L_LIM_TEMP_MOTOR_HUB_START;
+#else
+	conf->l_temp_motor_hub_start = 60.0;
+#endif
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_END
+	conf->l_temp_motor_hub_end = MCCONF_L_LIM_TEMP_MOTOR_HUB_END;
+#else
+	conf->l_temp_motor_hub_end = 85.0;
+#endif
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_AGGRESSIVE_START
+	conf->l_temp_motor_hub_aggressive_start = MCCONF_L_LIM_TEMP_MOTOR_HUB_AGGRESSIVE_START;
+#else
+	conf->l_temp_motor_hub_aggressive_start = 90.0;
+#endif
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_AGGRESSIVE_END
+	conf->l_temp_motor_hub_aggressive_end = MCCONF_L_LIM_TEMP_MOTOR_HUB_AGGRESSIVE_END;
+#else
+	conf->l_temp_motor_hub_aggressive_end = 105.0;
+#endif
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_POWER_SCALE
+	conf->l_temp_motor_hub_power_scale = MCCONF_L_LIM_TEMP_MOTOR_HUB_POWER_SCALE;
+#else
+	conf->l_temp_motor_hub_power_scale = 0.8;
+#endif
+#ifdef MCCONF_L_LIM_TEMP_MOTOR_HUB_ADAPTIVE_ENABLE
+	conf->l_temp_motor_hub_adaptive_enable = MCCONF_L_LIM_TEMP_MOTOR_HUB_ADAPTIVE_ENABLE;
+#else
+	conf->l_temp_motor_hub_adaptive_enable = false;
+#endif
 	conf->l_min_duty = MCCONF_L_MIN_DUTY;
 	conf->l_max_duty = MCCONF_L_MAX_DUTY;
 	conf->l_watt_max = MCCONF_L_WATT_MAX;

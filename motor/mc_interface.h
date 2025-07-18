@@ -51,6 +51,28 @@ void mc_interface_set_current_rel(float val);
 void mc_interface_set_brake_current_rel(float val);
 void mc_interface_set_handbrake(float current);
 void mc_interface_set_handbrake_rel(float val);
+void mc_interface_brake_by_shorting_phases(float current);
+
+// Enhanced thermal management for hub motors
+float mc_interface_get_hub_motor_thermal_factor(void);
+void mc_interface_update_hub_motor_thermal_management(void);
+bool mc_interface_is_hub_motor_thermal_limit_active(void);
+
+// Telemetry functions for thermal monitoring
+typedef struct {
+	float motor_thermal_factor;
+	float fet_thermal_factor;
+	float hub_scaling_factor;
+	float combined_thermal_factor;
+	bool thermal_limit_active;
+	float temp_motor;
+	float temp_fet;
+	float power_watts;
+	float rpm;
+	float duty_cycle;
+} thermal_telemetry_t;
+
+void mc_interface_get_thermal_telemetry(thermal_telemetry_t *telemetry);
 void mc_interface_set_openloop_current(float current, float rpm);
 void mc_interface_set_openloop_phase(float current, float phase);
 void mc_interface_set_openloop_duty(float dutyCycle, float rpm);
