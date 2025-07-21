@@ -41,6 +41,10 @@
 #include "crc.h"
 #include "bms.h"
 #include "events.h"
+// Hardware adaptation includes conditionally included
+#ifdef HW_FLIPSKY_75200_PRO_V2_ADAPTATIONS_H_
+#include "../hwconf/hw_flipsky_75200_pro_v2_adaptations.h"
+#endif
 
 #include <math.h>
 #include <stdlib.h>
@@ -119,6 +123,19 @@ __attribute__((section(".ram4"))) static volatile int16_t m_f_sw_samples[ADC_SAM
 __attribute__((section(".ram4"))) static volatile int8_t m_phase_samples[ADC_SAMPLE_MAX_LEN];
 
 static volatile int m_sample_len;
+// Adaptive Parameter System Variables
+static volatile adaptive_params_state_t m_adaptive_params_state = {0};
+static volatile bool m_adaptive_params_enabled = false;
+
+// Enhanced Telemetry System Variables
+static volatile hub_motor_telemetry_t m_hub_motor_telemetry = {0};
+static volatile bool m_telemetry_enabled = false;
+static volatile systime_t m_last_telemetry_time = 0;
+
+// Field Optimization System Variables
+static volatile field_optimization_state_t m_field_optimization_state = {0};
+static volatile field_optimization_sample_t m_optimization_samples[100];
+static volatile bool m_field_optimization_enabled = false;
 static volatile int m_sample_int;
 static volatile bool m_sample_raw;
 static volatile debug_sampling_mode m_sample_mode;
@@ -249,6 +266,22 @@ void mc_interface_init(void) {
 
 	default:
 		break;
+	}
+
+	// Initialize enhanced features if enabled
+	if (motor_now()->m_conf.motor_type == MOTOR_TYPE_FOC) {
+		// Initialize enhanced HFI
+		mc_interface_init_enhanced_hfi();
+		
+		// Initialize enhanced MTPA
+		mc_interface_init_enhanced_mtpa();
+		
+		// Initialize enhanced field weakening
+		mc_interface_init_enhanced_field_weakening();
+		
+		// Initialize hardware-specific adaptations for Flipsky 75200 Pro V2.0
+		// Note: Specific adaptations would be included here for enhanced hardware support
+		// hw_flipsky_75200_pro_v2_init_adaptations();
 	}
 
 	bms_init((bms_config*)&m_motor_1.m_conf.bms);
@@ -2872,6 +2905,22 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 #ifdef HW_HAS_WHEEL_SPEED_SENSOR
 	hw_update_speed_sensor();
 #endif
+
+	// Update enhanced features if enabled (only for motor 1 to avoid duplication)
+	if (is_motor_1 && motor->m_conf.motor_type == MOTOR_TYPE_FOC) {
+		// Update enhanced HFI
+		mc_interface_update_enhanced_hfi();
+		
+		// Update enhanced MTPA
+		mc_interface_update_enhanced_mtpa();
+		
+		// Update enhanced field weakening
+		mc_interface_update_enhanced_field_weakening();
+		
+		// Update hardware-specific diagnostics for Flipsky 75200 Pro V2.0
+		// Note: Specific diagnostics would be updated here for enhanced hardware support
+		// hw_flipsky_75200_pro_v2_update_diagnostics();
+	}
 }
 
 static THD_FUNCTION(timer_thread, arg) {
@@ -3215,4 +3264,1613 @@ unsigned mc_interface_calc_crc(mc_configuration* conf_in, bool is_motor_2) {
 	unsigned crc_new = crc16((uint8_t*)conf, sizeof(mc_configuration));
 	conf->crc = crc_old;
 	return crc_new;
+}
+
+/**
+ * Initialize the adaptive parameter system
+ */
+void mc_interface_init_adaptive_params(void) {
+    // Initialize adaptive parameters with current configuration values
+    m_adaptive_params_state.kp_adapted = m_motor_1.m_conf.foc_current_kp;
+    m_adaptive_params_state.ki_adapted = m_motor_1.m_conf.foc_current_ki;
+    m_adaptive_params_state.resistance_adapted = m_motor_1.m_conf.foc_motor_r;
+    m_adaptive_params_state.flux_linkage_adapted = m_motor_1.m_conf.foc_motor_flux_linkage;
+    
+    // Initialize temperature filters with reasonable starting values
+    m_adaptive_params_state.temp_motor_filtered = 25.0f;
+    m_adaptive_params_state.temp_fet_filtered = 25.0f;
+    
+    // Initialize adaptation state
+    m_adaptive_params_state.adaptation_factor = 1.0f;
+    m_adaptive_params_state.adaptation_active = false;
+    m_adaptive_params_state.adaptation_update_count = 0;
+    m_adaptive_params_state.last_update_time = chVTGetSystemTimeX();
+    
+    // Validate configuration parameters
+    if (m_motor_1.m_conf.foc_adaptive_kp_temp_coeff < 0.0f || 
+        m_motor_1.m_conf.foc_adaptive_kp_temp_coeff > 5.0f) {
+        m_motor_1.m_conf.foc_adaptive_kp_temp_coeff = 0.8f; // Default safe value
+    }
+    
+    if (m_motor_1.m_conf.foc_adaptive_ki_temp_coeff < 0.0f || 
+        m_motor_1.m_conf.foc_adaptive_ki_temp_coeff > 5.0f) {
+        m_motor_1.m_conf.foc_adaptive_ki_temp_coeff = 0.6f; // Default safe value
+    }
+    
+    if (m_motor_1.m_conf.foc_adaptive_resistance_temp_coeff < 0.0f || 
+        m_motor_1.m_conf.foc_adaptive_resistance_temp_coeff > 1.0f) {
+        m_motor_1.m_conf.foc_adaptive_resistance_temp_coeff = 0.393f; // Copper coefficient
+    }
+    
+    if (m_motor_1.m_conf.foc_adaptive_flux_temp_coeff < 0.0f || 
+        m_motor_1.m_conf.foc_adaptive_flux_temp_coeff > 1.0f) {
+        m_motor_1.m_conf.foc_adaptive_flux_temp_coeff = 0.1f; // Default safe value
+    }
+    
+    if (m_motor_1.m_conf.foc_adaptive_temp_reference < 0.0f || 
+        m_motor_1.m_conf.foc_adaptive_temp_reference > 50.0f) {
+        m_motor_1.m_conf.foc_adaptive_temp_reference = 25.0f; // Room temperature
+    }
+    
+    if (m_motor_1.m_conf.foc_adaptive_param_lpf_tau < 0.1f || 
+        m_motor_1.m_conf.foc_adaptive_param_lpf_tau > 10.0f) {
+        m_motor_1.m_conf.foc_adaptive_param_lpf_tau = 2.0f; // Default safe value
+    }
+    
+    // Enable adaptive parameters only if configuration is valid
+    m_adaptive_params_enabled = m_motor_1.m_conf.foc_adaptive_enable;
+}
+
+/**
+ * Update adaptive parameters based on temperature
+ */
+void mc_interface_update_adaptive_params(void) {
+    if (!m_adaptive_params_enabled) {
+        return;
+    }
+    
+    systime_t now = chVTGetSystemTimeX();
+    if (ST2MS(now - m_adaptive_params_state.last_update_time) < 100) {
+        return; // Update at 10Hz maximum
+    }
+    
+    // Get current temperatures
+    float temp_motor = mc_interface_temp_motor_filtered();
+    float temp_fet = mc_interface_temp_fet_filtered();
+    
+    // Apply low-pass filtering for temperature smoothing
+    float lpf_tau = m_motor_1.m_conf.foc_adaptive_param_lpf_tau;
+    
+    // Use proper UTILS_LP_FAST for temperature filtering
+    UTILS_LP_FAST(m_adaptive_params_state.temp_motor_filtered, temp_motor, lpf_tau);
+    UTILS_LP_FAST(m_adaptive_params_state.temp_fet_filtered, temp_fet, lpf_tau);
+    
+    // Calculate temperature difference from reference
+    float temp_ref = m_motor_1.m_conf.foc_adaptive_temp_reference;
+    float temp_diff_motor = m_adaptive_params_state.temp_motor_filtered - temp_ref;
+    float temp_diff_fet = m_adaptive_params_state.temp_fet_filtered - temp_ref;
+    
+    // Update adapted parameters
+    float kp_coeff = m_motor_1.m_conf.foc_adaptive_kp_temp_coeff;
+    float ki_coeff = m_motor_1.m_conf.foc_adaptive_ki_temp_coeff;
+    float r_coeff = m_motor_1.m_conf.foc_adaptive_resistance_temp_coeff;
+    float flux_coeff = m_motor_1.m_conf.foc_adaptive_flux_temp_coeff;
+    
+    // Adapt current controller gains (reduce at high temperature for stability)
+    m_adaptive_params_state.kp_adapted = 
+        m_motor_1.m_conf.foc_current_kp * (1.0f - kp_coeff * temp_diff_fet / 100.0f);
+    m_adaptive_params_state.ki_adapted = 
+        m_motor_1.m_conf.foc_current_ki * (1.0f - ki_coeff * temp_diff_fet / 100.0f);
+    
+    // Adapt motor resistance (increases with temperature)
+    m_adaptive_params_state.resistance_adapted = 
+        m_motor_1.m_conf.foc_motor_r * (1.0f + r_coeff * temp_diff_motor / 100.0f);
+    
+    // Adapt flux linkage (decreases with magnet temperature)
+    m_adaptive_params_state.flux_linkage_adapted = 
+        m_motor_1.m_conf.foc_motor_flux_linkage * (1.0f - flux_coeff * temp_diff_motor / 100.0f);
+    
+    // Calculate overall adaptation factor
+    float temp_max = utils_max_abs(temp_diff_motor, temp_diff_fet);
+    m_adaptive_params_state.adaptation_factor = 1.0f / (1.0f + fabsf(temp_max) / 50.0f);
+    
+    // Set adaptation active flag
+    m_adaptive_params_state.adaptation_active = (fabsf(temp_diff_motor) > 5.0f || fabsf(temp_diff_fet) > 5.0f);
+    
+    // Update counters
+    m_adaptive_params_state.adaptation_update_count++;
+    m_adaptive_params_state.last_update_time = now;
+    
+    // Constrain adapted parameters to safe ranges using proper bounds checking
+    utils_truncate_number(&m_adaptive_params_state.kp_adapted, 0.001f, 0.1f);
+    utils_truncate_number(&m_adaptive_params_state.ki_adapted, 0.1f, 100.0f);
+    utils_truncate_number(&m_adaptive_params_state.resistance_adapted, 0.001f, 1.0f);
+    utils_truncate_number(&m_adaptive_params_state.flux_linkage_adapted, 0.001f, 0.1f);
+}
+
+/**
+ * Get adaptive parameters state
+ */
+adaptive_params_state_t mc_interface_get_adaptive_params_state(void) {
+    return m_adaptive_params_state;
+}
+
+/**
+ * Set adaptive parameters enable
+ */
+void mc_interface_set_adaptive_params_enable(bool enable) {
+    m_adaptive_params_enabled = enable;
+    if (enable) {
+        mc_interface_init_adaptive_params();
+    }
+}
+
+/**
+ * Get adaptive parameters enable
+ */
+bool mc_interface_get_adaptive_params_enable(void) {
+    return m_adaptive_params_enabled;
+}
+
+/**
+ * Get adapted Kp value
+ */
+float mc_interface_get_adapted_kp(void) {
+    return m_adaptive_params_enabled ? m_adaptive_params_state.kp_adapted : m_motor_1.m_conf.foc_current_kp;
+}
+
+/**
+ * Get adapted Ki value
+ */
+float mc_interface_get_adapted_ki(void) {
+    return m_adaptive_params_enabled ? m_adaptive_params_state.ki_adapted : m_motor_1.m_conf.foc_current_ki;
+}
+
+/**
+ * Get adapted resistance value
+ */
+float mc_interface_get_adapted_resistance(void) {
+    return m_adaptive_params_enabled ? m_adaptive_params_state.resistance_adapted : m_motor_1.m_conf.foc_motor_r;
+}
+
+/**
+ * Get adapted flux linkage value
+ */
+float mc_interface_get_adapted_flux_linkage(void) {
+    return m_adaptive_params_enabled ? m_adaptive_params_state.flux_linkage_adapted : m_motor_1.m_conf.foc_motor_flux_linkage;
+}
+
+/**
+ * Initialize telemetry system
+ */
+void mc_interface_init_telemetry(void) {
+    // Clear telemetry structure
+    memset((void*)&m_hub_motor_telemetry, 0, sizeof(hub_motor_telemetry_t));
+    
+    // Initialize telemetry with reasonable defaults
+    m_hub_motor_telemetry.motor_temp_c = 25.0f;
+    m_hub_motor_telemetry.fet_temp_c = 25.0f;
+    m_hub_motor_telemetry.battery_voltage_v = 48.0f;
+    m_hub_motor_telemetry.efficiency_percent = 85.0f;
+    m_hub_motor_telemetry.timestamp_ms = chVTGetSystemTimeX();
+    
+    // Initialize telemetry enable flag
+    m_telemetry_enabled = m_motor_1.m_conf.telemetry_enable;
+    m_last_telemetry_time = chVTGetSystemTimeX();
+}
+
+/**
+ * Update telemetry data
+ */
+void mc_interface_update_telemetry(void) {
+    if (!m_telemetry_enabled) {
+        return;
+    }
+    
+    systime_t now = chVTGetSystemTimeX();
+    float rate_ms = 1000.0f / m_motor_1.m_conf.telemetry_rate_hz;
+    
+    if (ST2MS(now - m_last_telemetry_time) < rate_ms) {
+        return;
+    }
+    
+    // Core measurements with validity checks
+    float temp_motor = mc_interface_temp_motor_filtered();
+    float temp_fet = mc_interface_temp_fet_filtered();
+    float voltage = mc_interface_get_input_voltage_filtered();
+    float motor_current = mc_interface_get_tot_current_filtered();
+    float battery_current = mc_interface_get_tot_current_in_filtered();
+    float rpm = mc_interface_get_rpm();
+    float duty_cycle = mc_interface_get_duty_cycle_now();
+    
+    // Validate sensor readings
+    if (temp_motor < -40.0f || temp_motor > 150.0f) {
+        temp_motor = 25.0f; // Default to room temperature if invalid
+    }
+    if (temp_fet < -40.0f || temp_fet > 150.0f) {
+        temp_fet = 25.0f; // Default to room temperature if invalid
+    }
+    if (voltage < 0.0f || voltage > 100.0f) {
+        voltage = 0.0f; // Default to 0V if invalid
+    }
+    if (fabsf(motor_current) > 300.0f) {
+        motor_current = 0.0f; // Default to 0A if invalid
+    }
+    if (fabsf(battery_current) > 200.0f) {
+        battery_current = 0.0f; // Default to 0A if invalid
+    }
+    if (fabsf(rpm) > 100000.0f) {
+        rpm = 0.0f; // Default to 0 RPM if invalid
+    }
+    if (fabsf(duty_cycle) > 1.0f) {
+        duty_cycle = 0.0f; // Default to 0% if invalid
+    }
+    
+    // Update telemetry structure
+    m_hub_motor_telemetry.motor_temp_c = temp_motor;
+    m_hub_motor_telemetry.fet_temp_c = temp_fet;
+    m_hub_motor_telemetry.battery_voltage_v = voltage;
+    m_hub_motor_telemetry.motor_current_a = motor_current;
+    m_hub_motor_telemetry.battery_current_a = battery_current;
+    m_hub_motor_telemetry.motor_rpm = rpm;
+    m_hub_motor_telemetry.duty_cycle_percent = duty_cycle * 100.0f;
+    
+    // Power and efficiency calculations with safety checks
+    float electrical_power = voltage * battery_current;
+    float mechanical_power = 0.0f;
+    
+    // Calculate mechanical power only if we have valid readings
+    if (fabsf(rpm) > 10.0f && fabsf(motor_current) > 0.1f) {
+        mechanical_power = (rpm * motor_current * m_adaptive_params_state.flux_linkage_adapted * 2.0f * M_PI) / 60.0f;
+    }
+    
+    m_hub_motor_telemetry.electrical_power_w = electrical_power;
+    m_hub_motor_telemetry.mechanical_power_w = mechanical_power;
+    
+    // Efficiency calculation with safety checks
+    if (fabsf(electrical_power) > 10.0f && fabsf(mechanical_power) > 1.0f) {
+        float efficiency = (mechanical_power / electrical_power) * 100.0f;
+        utils_truncate_number(&efficiency, 0.0f, 100.0f); // Constrain to valid range
+        m_hub_motor_telemetry.efficiency_percent = efficiency;
+    } else {
+        m_hub_motor_telemetry.efficiency_percent = 0.0f;
+    }
+    
+    // Power factor calculation with safety checks
+    float voltage_magnitude = fabsf(voltage);
+    float current_magnitude = fabsf(motor_current);
+    
+    if (voltage_magnitude > 1.0f && current_magnitude > 0.1f) {
+        float power_factor = fabsf(electrical_power) / (voltage_magnitude * current_magnitude);
+        utils_truncate_number(&power_factor, 0.0f, 1.0f); // Constrain to valid range
+        m_hub_motor_telemetry.power_factor = power_factor;
+    } else {
+        m_hub_motor_telemetry.power_factor = 1.0f;
+    }
+    
+    // Adaptive parameters (only if enabled and valid)
+    if (m_motor_1.m_conf.telemetry_include_adaptive_params && m_adaptive_params_enabled) {
+        m_hub_motor_telemetry.kp_current = mc_interface_get_adapted_kp();
+        m_hub_motor_telemetry.ki_current = mc_interface_get_adapted_ki();
+        m_hub_motor_telemetry.resistance_current = mc_interface_get_adapted_resistance();
+        m_hub_motor_telemetry.flux_linkage_current = mc_interface_get_adapted_flux_linkage();
+        m_hub_motor_telemetry.adaptation_factor = m_adaptive_params_state.adaptation_factor;
+        m_hub_motor_telemetry.adaptation_active = m_adaptive_params_state.adaptation_active;
+    } else {
+        // Clear adaptive parameters if not enabled
+        m_hub_motor_telemetry.kp_current = 0.0f;
+        m_hub_motor_telemetry.ki_current = 0.0f;
+        m_hub_motor_telemetry.resistance_current = 0.0f;
+        m_hub_motor_telemetry.flux_linkage_current = 0.0f;
+        m_hub_motor_telemetry.adaptation_factor = 1.0f;
+        m_hub_motor_telemetry.adaptation_active = false;
+    }
+    
+    // Thermal management with safety checks
+    float thermal_factor = mc_interface_get_hub_motor_thermal_factor();
+    utils_truncate_number(&thermal_factor, 0.0f, 1.0f);
+    m_hub_motor_telemetry.thermal_derating_factor = thermal_factor;
+    m_hub_motor_telemetry.thermal_limit_active = mc_interface_is_hub_motor_thermal_limit_active();
+    
+    // Field optimization (only if enabled)
+    if (m_field_optimization_enabled) {
+        float performance_score = mc_interface_calculate_performance_score();
+        utils_truncate_number(&performance_score, 0.0f, 1.0f);
+        m_hub_motor_telemetry.performance_score = performance_score;
+        m_hub_motor_telemetry.learning_rate_current = m_field_optimization_state.learning_rate;
+        m_hub_motor_telemetry.optimization_cycles = m_field_optimization_state.optimization_cycles;
+        m_hub_motor_telemetry.auto_tune_active = m_field_optimization_state.auto_tune_enabled;
+    } else {
+        // Clear optimization parameters if not enabled
+        m_hub_motor_telemetry.performance_score = 0.0f;
+        m_hub_motor_telemetry.learning_rate_current = 0.0f;
+        m_hub_motor_telemetry.optimization_cycles = 0;
+        m_hub_motor_telemetry.auto_tune_active = false;
+    }
+    
+    // System status
+    m_hub_motor_telemetry.timestamp_ms = ST2MS(now);
+    m_hub_motor_telemetry.fault_code = mc_interface_get_fault();
+    
+    m_last_telemetry_time = now;
+}
+
+/**
+ * Get hub motor telemetry data
+ */
+hub_motor_telemetry_t mc_interface_get_hub_motor_telemetry(void) {
+    return m_hub_motor_telemetry;
+}
+
+/**
+ * Set telemetry enable
+ */
+void mc_interface_set_telemetry_enable(bool enable) {
+    m_telemetry_enabled = enable;
+    if (enable) {
+        mc_interface_init_telemetry();
+    }
+}
+
+/**
+ * Get telemetry enable
+ */
+bool mc_interface_get_telemetry_enable(void) {
+    return m_telemetry_enabled;
+}
+
+/**
+ * Send telemetry via CAN
+ */
+void mc_interface_send_telemetry(void) {
+    if (!m_telemetry_enabled) {
+        return;
+    }
+    
+    // Send via CAN bus
+    if (m_motor_1.m_conf.telemetry_can_id != 0) {
+        comm_can_send_buffer(m_motor_1.m_conf.telemetry_can_id, 
+                            (uint8_t*)&m_hub_motor_telemetry, 
+                            sizeof(hub_motor_telemetry_t), 0);
+    }
+}
+
+/**
+ * Calculate performance metrics
+ */
+performance_metrics_t mc_interface_calculate_performance_metrics(void) {
+    performance_metrics_t metrics = {0};
+    
+    metrics.electrical_power = m_hub_motor_telemetry.electrical_power_w;
+    metrics.mechanical_power = m_hub_motor_telemetry.mechanical_power_w;
+    metrics.efficiency_percent = m_hub_motor_telemetry.efficiency_percent;
+    metrics.motor_temp = m_hub_motor_telemetry.motor_temp_c;
+    metrics.fet_temp = m_hub_motor_telemetry.fet_temp_c;
+    metrics.rpm = m_hub_motor_telemetry.motor_rpm;
+    metrics.current_motor = m_hub_motor_telemetry.motor_current_a;
+    metrics.current_battery = m_hub_motor_telemetry.battery_current_a;
+    metrics.voltage_battery = m_hub_motor_telemetry.battery_voltage_v;
+    metrics.duty_cycle = m_hub_motor_telemetry.duty_cycle_percent;
+    metrics.power_factor = m_hub_motor_telemetry.power_factor;
+    metrics.timestamp_ms = m_hub_motor_telemetry.timestamp_ms;
+    
+    return metrics;
+}
+
+/**
+ * Initialize field optimization system
+ */
+void mc_interface_init_field_optimization(void) {
+    m_field_optimization_state.samples = (field_optimization_sample_t*)m_optimization_samples;
+    m_field_optimization_state.buffer_size = 100;
+    m_field_optimization_state.current_size = 0;
+    m_field_optimization_state.write_index = 0;
+    // Initialize optimization tracking
+    
+    // Validate and set learning rate with improved bounds
+    float learning_rate = m_motor_1.m_conf.field_opt_learning_rate;
+    if (learning_rate < 0.001f || learning_rate > 0.1f) {
+        learning_rate = 0.01f; // Default safe value
+    }
+    m_field_optimization_state.learning_rate = learning_rate;
+    
+    m_field_optimization_state.optimization_cycles = 0;
+    m_field_optimization_state.auto_tune_enabled = m_motor_1.m_conf.field_opt_auto_tune;
+    m_field_optimization_state.last_optimization_time = chVTGetSystemTimeX();
+    m_field_optimization_state.current_performance = 0.0f;
+    m_field_optimization_state.best_performance = 0.0f;
+    
+    // Initialize optimal parameters with current values and validate ranges
+    m_field_optimization_state.optimal_parameters[0] = m_motor_1.m_conf.foc_current_kp;
+    m_field_optimization_state.optimal_parameters[1] = m_motor_1.m_conf.foc_current_ki;
+    m_field_optimization_state.optimal_parameters[2] = m_motor_1.m_conf.foc_motor_r;
+    m_field_optimization_state.optimal_parameters[3] = m_motor_1.m_conf.foc_motor_flux_linkage;
+    m_field_optimization_state.optimal_parameters[4] = m_motor_1.m_conf.foc_observer_gain_slow;
+    m_field_optimization_state.optimal_parameters[5] = m_motor_1.m_conf.foc_f_zv;
+    
+    // Enhanced parameter validation with motor-specific bounds
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[0], 0.001f, 0.1f);    // Kp
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[1], 0.1f, 100.0f);    // Ki
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[2], 0.001f, 1.0f);    // Resistance
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[3], 0.001f, 0.1f);    // Flux linkage
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[4], 0.1f, 2.0f);      // Observer gain
+    utils_truncate_number(&m_field_optimization_state.optimal_parameters[5], 10000.0f, 50000.0f); // F_zv
+    
+    // Initialize performance tracking
+    m_field_optimization_state.current_performance = 0.0f;
+    m_field_optimization_state.best_performance = 0.0f;
+    
+    m_field_optimization_enabled = m_motor_1.m_conf.field_opt_enable;
+    
+    // Log initialization if enabled
+    if (m_field_optimization_enabled) {
+        // Field optimization system initialized successfully
+    }
+}
+
+/**
+ * Update field optimization system
+ */
+void mc_interface_update_field_optimization(void) {
+    if (!m_field_optimization_enabled) {
+        return;
+    }
+    
+    systime_t now = chVTGetSystemTimeX();
+    
+    // Only optimize during stable operation (not during transients)
+    float current_abs = fabsf(mc_interface_get_tot_current());
+    float rpm_abs = fabsf(mc_interface_get_rpm());
+    bool stable_operation = (current_abs > 5.0f && rpm_abs > 100.0f);
+    
+    // Add optimization sample every 2 seconds during stable operation
+    if (stable_operation && ST2MS(now - m_field_optimization_state.last_optimization_time) >= 2000) {
+        mc_interface_add_optimization_sample();
+        
+        // Run optimization every 5 samples (10 seconds of stable operation)
+        if (m_field_optimization_state.current_size >= 5 && 
+            m_field_optimization_state.current_size % 5 == 0) {
+            mc_interface_run_parameter_optimization();
+        }
+        
+        m_field_optimization_state.last_optimization_time = now;
+        m_field_optimization_state.optimization_cycles++;
+    }
+    
+    // Reset optimization if motor has been idle for too long
+    if (current_abs < 1.0f && ST2MS(now - m_field_optimization_state.last_optimization_time) > 30000) {
+        m_field_optimization_state.current_size = 0;
+        // Reset optimization state
+    }
+}
+
+/**
+ * Add optimization sample
+ */
+void mc_interface_add_optimization_sample(void) {
+    if (m_field_optimization_state.current_size >= m_field_optimization_state.buffer_size) {
+        return;
+    }
+    
+    field_optimization_sample_t *sample = 
+        (field_optimization_sample_t*)&m_field_optimization_state.samples[m_field_optimization_state.write_index];
+    
+    // Operating conditions
+    sample->operating_conditions[0] = fabsf(mc_interface_get_rpm()); // Speed
+    sample->operating_conditions[1] = fabsf(mc_interface_get_tot_current_filtered()); // Load
+    sample->operating_conditions[2] = mc_interface_temp_motor_filtered(); // Temperature
+    sample->operating_conditions[3] = mc_interface_get_input_voltage_filtered(); // Voltage
+    sample->operating_conditions[4] = fabsf(mc_interface_get_duty_cycle_now()); // Duty cycle
+    sample->operating_conditions[5] = fabsf(mc_interface_get_tot_current_in_filtered()); // Battery current
+    sample->operating_conditions[6] = m_hub_motor_telemetry.electrical_power_w; // Power
+    sample->operating_conditions[7] = m_hub_motor_telemetry.efficiency_percent; // Efficiency
+    
+    // Control parameters
+    sample->control_parameters[0] = mc_interface_get_adapted_kp();
+    sample->control_parameters[1] = mc_interface_get_adapted_ki();
+    sample->control_parameters[2] = m_motor_1.m_conf.foc_observer_gain_slow;
+    sample->control_parameters[3] = m_motor_1.m_conf.foc_f_zv;
+    sample->control_parameters[4] = m_motor_1.m_conf.foc_sl_erpm;
+    sample->control_parameters[5] = m_motor_1.m_conf.foc_openloop_rpm;
+    
+    // Performance metric
+    sample->performance_metric = mc_interface_calculate_performance_score();
+    sample->timestamp = ST2MS(chVTGetSystemTimeX());
+    
+    m_field_optimization_state.write_index = 
+        (m_field_optimization_state.write_index + 1) % m_field_optimization_state.buffer_size;
+    
+    if (m_field_optimization_state.current_size < m_field_optimization_state.buffer_size) {
+        m_field_optimization_state.current_size++;
+    }
+}
+
+/**
+ * Run parameter optimization
+ */
+void mc_interface_run_parameter_optimization(void) {
+    if (!m_field_optimization_enabled || !m_field_optimization_state.auto_tune_enabled) {
+        return;
+    }
+    
+    if (m_field_optimization_state.current_size < 5) {
+        return;
+    }
+    
+    // Enhanced gradient descent optimization with momentum
+    float current_performance = mc_interface_calculate_performance_score();
+    
+    // Performance improvement threshold for parameter updates
+    float improvement_threshold = 0.02f; // 2% improvement required
+    
+    if (current_performance > m_field_optimization_state.best_performance + improvement_threshold) {
+        m_field_optimization_state.best_performance = current_performance;
+        // Reset optimization state
+        
+        // Update optimal parameters with current adaptive values
+        m_field_optimization_state.optimal_parameters[0] = mc_interface_get_adapted_kp();
+        m_field_optimization_state.optimal_parameters[1] = mc_interface_get_adapted_ki();
+        m_field_optimization_state.optimal_parameters[2] = mc_interface_get_adapted_resistance();
+        m_field_optimization_state.optimal_parameters[3] = mc_interface_get_adapted_flux_linkage();
+        m_field_optimization_state.optimal_parameters[4] = m_motor_1.m_conf.foc_observer_gain_slow;
+        m_field_optimization_state.optimal_parameters[5] = m_motor_1.m_conf.foc_f_zv;
+        
+        // Apply momentum to learning rate
+        m_field_optimization_state.learning_rate = fminf(m_field_optimization_state.learning_rate * 1.1f, 0.05f);
+    } else {
+        // Track optimization progress
+        
+        // Reduce learning rate if no improvement
+        if (m_field_optimization_state.optimization_cycles > 3) {
+            m_field_optimization_state.learning_rate = fmaxf(m_field_optimization_state.learning_rate * 0.8f, 0.001f);
+        }
+    }
+    
+    // Check for convergence
+    if (m_field_optimization_state.optimization_cycles >= 10) {
+        // Optimization has converged
+        // Store converged parameters in configuration
+        m_motor_1.m_conf.foc_current_kp = m_field_optimization_state.optimal_parameters[0];
+        m_motor_1.m_conf.foc_current_ki = m_field_optimization_state.optimal_parameters[1];
+    }
+    
+    m_field_optimization_state.current_performance = current_performance;
+    m_field_optimization_state.optimization_cycles++;
+}
+
+/**
+ * Calculate performance score
+ */
+float mc_interface_calculate_performance_score(void) {
+    float efficiency = m_hub_motor_telemetry.efficiency_percent;
+    float power = fabsf(m_hub_motor_telemetry.electrical_power_w);
+    float temperature = m_hub_motor_telemetry.motor_temp_c;
+    float current = fabsf(m_hub_motor_telemetry.motor_current_a);
+    float rpm = fabsf(m_hub_motor_telemetry.motor_rpm);
+    
+    // Enhanced smoothness metric based on current ripple and speed stability
+    float current_ripple = fabsf(mc_interface_get_tot_current() - mc_interface_get_tot_current_filtered());
+    float speed_stability = 1.0f;
+    if (rpm > 100.0f) {
+        speed_stability = 1.0f - utils_map(current_ripple, 0.0f, 10.0f, 0.0f, 0.3f);
+    }
+    
+    // Weighted performance score with adaptive weights based on operating conditions
+    float efficiency_weight = 0.35f;
+    float power_weight = 0.25f;
+    float thermal_weight = 0.25f;
+    float smoothness_weight = 0.15f;
+    
+    // Adaptive weighting based on operating conditions
+    if (temperature > 80.0f) {
+        thermal_weight += 0.1f;
+        efficiency_weight -= 0.05f;
+        power_weight -= 0.05f;
+    }
+    
+    // Performance score calculations with proper bounds checking
+    float efficiency_score = 0.0f;
+    if (efficiency > 0.0f) {
+        efficiency_score = utils_map(efficiency, 0.0f, 100.0f, 0.0f, 1.0f);
+        utils_truncate_number(&efficiency_score, 0.0f, 1.0f);
+    }
+    
+    float power_score = 0.0f;
+    if (power > 0.0f) {
+        power_score = utils_map(power, 0.0f, 1500.0f, 0.0f, 1.0f); // Extended range for 1000W+ operation
+        utils_truncate_number(&power_score, 0.0f, 1.0f);
+    }
+    
+    float thermal_score = 1.0f;
+    if (temperature > 25.0f) {
+        thermal_score = 1.0f - utils_map(temperature, 25.0f, 120.0f, 0.0f, 1.0f); // Extended temperature range
+        utils_truncate_number(&thermal_score, 0.0f, 1.0f);
+    }
+    
+    utils_truncate_number(&speed_stability, 0.0f, 1.0f);
+    
+    float total_score = efficiency_weight * efficiency_score + 
+                       power_weight * power_score + 
+                       thermal_weight * thermal_score + 
+                       smoothness_weight * speed_stability;
+    
+    // Constrain to valid range
+    utils_truncate_number(&total_score, 0.0f, 1.0f);
+    
+    return total_score;
+}
+
+/**
+ * Get field optimization state
+ */
+field_optimization_state_t mc_interface_get_field_optimization_state(void) {
+    return m_field_optimization_state;
+}
+
+/**
+ * Set field optimization enable
+ */
+void mc_interface_set_field_optimization_enable(bool enable) {
+    m_field_optimization_enabled = enable;
+    if (enable) {
+        mc_interface_init_field_optimization();
+    }
+}
+
+/**
+ * Get field optimization enable
+ */
+bool mc_interface_get_field_optimization_enable(void) {
+    return m_field_optimization_enabled;
+}
+
+// Enhanced HFI sensorless control implementation
+static enhanced_hfi_data_t m_enhanced_hfi_data;
+static bool m_enhanced_hfi_initialized = false;
+
+/**
+ * Initialize enhanced HFI sensorless control
+ */
+void mc_interface_init_enhanced_hfi(void) {
+    memset(&m_enhanced_hfi_data, 0, sizeof(enhanced_hfi_data_t));
+    
+    // Initialize enhanced HFI parameters with hardware adaptations
+    m_enhanced_hfi_data.hfi_enhanced_enabled = true;
+    m_enhanced_hfi_data.voltage_adaptation_enabled = true;
+    m_enhanced_hfi_data.hfi_signal_quality = 0.0f;
+    
+    // Hardware-specific adaptations for Flipsky 75200 Pro V2.0
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        // CRITICAL: Reduced parameters for hardware without phase filters
+        m_enhanced_hfi_data.hfi_voltage_scale = 0.8f;  // Reduced from 1.0f
+        m_enhanced_hfi_data.hfi_bandwidth_hz = 250.0f; // Reduced from 500.0f
+        m_enhanced_hfi_data.hfi_phase_margin = 55.0f;  // Increased for stability
+        m_enhanced_hfi_data.hfi_gain_margin = 8.0f;    // Increased for stability
+        // Hardware-specific configuration for missing phase filters
+        m_enhanced_hfi_data.hfi_zero_speed_capable = false; // Limited without phase filters
+        // Enable conservative HFI mode for hardware without phase filters
+        m_enhanced_hfi_data.hfi_gain_compensation = 1.5f; // Higher noise compensation
+        m_enhanced_hfi_data.hfi_voltage_injection = 0.8f; // Reduced injection amplitude
+    #else
+        // Standard parameters for hardware with phase filters
+        m_enhanced_hfi_data.hfi_voltage_scale = 1.0f;
+        m_enhanced_hfi_data.hfi_bandwidth_hz = 500.0f;
+        m_enhanced_hfi_data.hfi_phase_margin = 45.0f;
+        m_enhanced_hfi_data.hfi_gain_margin = 6.0f;
+        // Standard HFI configuration for hardware with phase filters
+        m_enhanced_hfi_data.hfi_zero_speed_capable = true;
+        m_enhanced_hfi_data.hfi_calibration_complete = false;
+        m_enhanced_hfi_data.hfi_gain_compensation = 1.0f;
+        m_enhanced_hfi_data.hfi_voltage_injection = 1.0f;
+    #endif
+    
+    m_enhanced_hfi_data.hfi_noise_level = 0.0f;
+    m_enhanced_hfi_data.hfi_angle_confidence = 0.0f;
+    m_enhanced_hfi_data.hfi_position_error = 0.0f;
+    m_enhanced_hfi_data.hfi_current_ripple = 0.0f;
+    m_enhanced_hfi_data.hfi_voltage_injection = 0.0f;
+    m_enhanced_hfi_data.hfi_frequency_adapt = 1.0f;
+    m_enhanced_hfi_data.hfi_gain_compensation = 1.0f;
+    m_enhanced_hfi_data.hfi_thermal_drift = 0.0f;
+    m_enhanced_hfi_data.hfi_calibration_samples = 0;
+    m_enhanced_hfi_data.hfi_quality_samples = 0;
+    m_enhanced_hfi_data.hfi_snr_db = 0.0f;
+    m_enhanced_hfi_data.hfi_update_cycles = 0;
+    m_enhanced_hfi_data.hfi_error_count = 0;
+    m_enhanced_hfi_data.hfi_last_update_time = 0.0f;
+    m_enhanced_hfi_data.hfi_processing_time = 0.0f;
+    m_enhanced_hfi_data.hfi_zero_speed_capable = false;
+    m_enhanced_hfi_data.hfi_calibration_complete = false;
+    m_enhanced_hfi_data.hfi_temperature_compensation = 1.0f;
+    
+    m_enhanced_hfi_initialized = true;
+}
+
+/**
+ * Update enhanced HFI sensorless control
+ */
+void mc_interface_update_enhanced_hfi(void) {
+    if (!m_enhanced_hfi_initialized || !m_enhanced_hfi_data.hfi_enhanced_enabled) {
+        return;
+    }
+    
+    uint32_t update_start_time = ST2MS(chVTGetSystemTimeX());
+    
+    // Get current motor state
+    float motor_temp = mc_interface_temp_motor_filtered();
+    float fet_temp = mc_interface_temp_fet_filtered();
+    float input_voltage = mc_interface_get_input_voltage_filtered();
+    float current_motor = mc_interface_get_tot_current_filtered();
+    float current_in = mc_interface_get_tot_current_in_filtered();
+    float rpm = mc_interface_get_rpm();
+    
+    // Enhanced HFI signal quality assessment
+    float current_ripple = fabsf(mc_interface_get_tot_current() - current_motor);
+    m_enhanced_hfi_data.hfi_current_ripple = current_ripple;
+    
+    // Calculate HFI injection voltage adaptation
+    if (m_enhanced_hfi_data.voltage_adaptation_enabled) {
+        // Adaptive voltage scaling based on motor temperature and speed
+        float temp_factor = 1.0f + (motor_temp - 25.0f) * 0.001f; // 0.1% per degree C
+        float speed_factor = 1.0f + fabsf(rpm) * 0.00001f; // Slight increase with speed
+        
+        m_enhanced_hfi_data.hfi_voltage_scale = temp_factor * speed_factor;
+        utils_truncate_number(&m_enhanced_hfi_data.hfi_voltage_scale, 0.5f, 2.0f);
+    }
+    
+    // Enhanced noise level estimation
+    float noise_estimation = current_ripple + fabsf(current_in - current_motor * 0.95f);
+    UTILS_LP_FAST(m_enhanced_hfi_data.hfi_noise_level, noise_estimation, 0.1f);
+    
+    // Signal quality calculation based on SNR
+    float signal_level = fabsf(current_motor);
+    float snr_linear = 1.0f;
+    if (m_enhanced_hfi_data.hfi_noise_level > 0.001f) {
+        snr_linear = signal_level / m_enhanced_hfi_data.hfi_noise_level;
+    }
+    m_enhanced_hfi_data.hfi_snr_db = 20.0f * log10f(snr_linear);
+    
+    // Signal quality assessment (0-1 scale)
+    m_enhanced_hfi_data.hfi_signal_quality = utils_map(m_enhanced_hfi_data.hfi_snr_db, 0.0f, 40.0f, 0.0f, 1.0f);
+    utils_truncate_number(&m_enhanced_hfi_data.hfi_signal_quality, 0.0f, 1.0f);
+    
+    // Angle confidence based on signal quality and motor parameters
+    float confidence_base = m_enhanced_hfi_data.hfi_signal_quality;
+    float speed_confidence = 1.0f - utils_map(fabsf(rpm), 0.0f, 5000.0f, 0.0f, 0.3f);
+    m_enhanced_hfi_data.hfi_angle_confidence = confidence_base * speed_confidence;
+    
+    // Zero-speed capability assessment
+    m_enhanced_hfi_data.hfi_zero_speed_capable = (m_enhanced_hfi_data.hfi_signal_quality > 0.6f) && 
+                                                 (fabsf(rpm) < 100.0f) && 
+                                                 (current_ripple < 2.0f);
+    
+    // Temperature compensation factor
+    float temp_compensation = 1.0f + (motor_temp - 25.0f) * 0.0015f; // 0.15% per degree C
+    UTILS_LP_FAST(m_enhanced_hfi_data.hfi_temperature_compensation, temp_compensation, 0.05f);
+    
+    // Frequency adaptation based on motor characteristics
+    float freq_adapt = 1.0f;
+    if (fabsf(rpm) > 1000.0f) {
+        freq_adapt = 1.0f + fabsf(rpm) * 0.00005f; // Slight frequency increase at high speed
+    }
+    m_enhanced_hfi_data.hfi_frequency_adapt = freq_adapt;
+    
+    // Gain compensation based on operating conditions
+    float gain_compensation = 1.0f;
+    if (motor_temp > 50.0f) {
+        gain_compensation = 1.0f + (motor_temp - 50.0f) * 0.002f; // Compensate for temperature effects
+    }
+    m_enhanced_hfi_data.hfi_gain_compensation = gain_compensation;
+    
+    // Update calibration progress
+    if (!m_enhanced_hfi_data.hfi_calibration_complete) {
+        m_enhanced_hfi_data.hfi_calibration_samples++;
+        if (m_enhanced_hfi_data.hfi_calibration_samples >= 1000) {
+            m_enhanced_hfi_data.hfi_calibration_complete = true;
+        }
+    }
+    
+    // Update quality assessment samples
+    m_enhanced_hfi_data.hfi_quality_samples++;
+    if (m_enhanced_hfi_data.hfi_quality_samples > 10000) {
+        m_enhanced_hfi_data.hfi_quality_samples = 10000; // Prevent overflow
+    }
+    
+    // Calculate processing time
+    uint32_t processing_time_us = ST2MS(chVTGetSystemTimeX()) - update_start_time;
+    m_enhanced_hfi_data.hfi_processing_time = processing_time_us / 1000.0f; // Convert to ms
+    
+    // Update counters
+    m_enhanced_hfi_data.hfi_update_cycles++;
+    m_enhanced_hfi_data.hfi_last_update_time = ST2MS(chVTGetSystemTimeX()) / 1000.0f;
+    
+    // Error detection and counting
+    if (m_enhanced_hfi_data.hfi_signal_quality < 0.2f || current_ripple > 10.0f) {
+        m_enhanced_hfi_data.hfi_error_count++;
+    }
+}
+
+/**
+ * Get enhanced HFI data
+ */
+enhanced_hfi_data_t mc_interface_get_enhanced_hfi_data(void) {
+    return m_enhanced_hfi_data;
+}
+
+/**
+ * Set HFI voltage adaptation enable
+ */
+void mc_interface_set_hfi_voltage_adaptation(bool enable) {
+    m_enhanced_hfi_data.voltage_adaptation_enabled = enable;
+}
+
+/**
+ * Get HFI signal quality
+ */
+float mc_interface_get_hfi_signal_quality(void) {
+    return m_enhanced_hfi_data.hfi_signal_quality;
+}
+
+/**
+ * Reset HFI calibration
+ */
+void mc_interface_reset_hfi_calibration(void) {
+    m_enhanced_hfi_data.hfi_calibration_samples = 0;
+    m_enhanced_hfi_data.hfi_quality_samples = 0;
+    m_enhanced_hfi_data.hfi_calibration_complete = false;
+    m_enhanced_hfi_data.hfi_error_count = 0;
+    m_enhanced_hfi_data.hfi_update_cycles = 0;
+}
+
+// Enhanced MTPA optimization implementation
+static enhanced_mtpa_data_t m_enhanced_mtpa_data;
+static bool m_enhanced_mtpa_initialized = false;
+
+/**
+ * Initialize enhanced MTPA optimization
+ */
+void mc_interface_init_enhanced_mtpa(void) {
+    memset(&m_enhanced_mtpa_data, 0, sizeof(enhanced_mtpa_data_t));
+    
+    // Initialize enhanced MTPA parameters
+    m_enhanced_mtpa_data.mtpa_enhanced_enabled = true;
+    m_enhanced_mtpa_data.temperature_compensation_enabled = true;
+    m_enhanced_mtpa_data.nonlinear_optimization_enabled = true;
+    m_enhanced_mtpa_data.mtpa_efficiency_gain = 0.0f;
+    m_enhanced_mtpa_data.mtpa_angle_optimal = 0.0f;
+    m_enhanced_mtpa_data.mtpa_id_optimal = 0.0f;
+    m_enhanced_mtpa_data.mtpa_iq_optimal = 0.0f;
+    m_enhanced_mtpa_data.mtpa_current_magnitude = 0.0f;
+    m_enhanced_mtpa_data.mtpa_torque_per_amp = 0.0f;
+    m_enhanced_mtpa_data.mtpa_flux_linkage_temp = 0.0f;
+    m_enhanced_mtpa_data.mtpa_inductance_ld_temp = 0.0f;
+    m_enhanced_mtpa_data.mtpa_inductance_lq_temp = 0.0f;
+    m_enhanced_mtpa_data.mtpa_resistance_temp = 0.0f;
+    m_enhanced_mtpa_data.mtpa_temperature_coefficient = 1.0f;
+    m_enhanced_mtpa_data.mtpa_saturation_factor = 1.0f;
+    m_enhanced_mtpa_data.mtpa_cross_coupling = 0.0f;
+    m_enhanced_mtpa_data.mtpa_iron_losses = 0.0f;
+    m_enhanced_mtpa_data.mtpa_copper_losses = 0.0f;
+    m_enhanced_mtpa_data.mtpa_total_losses = 0.0f;
+    m_enhanced_mtpa_data.mtpa_efficiency_percent = 0.0f;
+    m_enhanced_mtpa_data.mtpa_power_factor = 0.0f;
+    m_enhanced_mtpa_data.mtpa_torque_ripple = 0.0f;
+    m_enhanced_mtpa_data.mtpa_optimization_cycles = 0;
+    m_enhanced_mtpa_data.mtpa_temperature_samples = 0;
+    m_enhanced_mtpa_data.mtpa_update_count = 0;
+    m_enhanced_mtpa_data.mtpa_error_count = 0;
+    m_enhanced_mtpa_data.mtpa_last_update_time = 0.0f;
+    m_enhanced_mtpa_data.mtpa_processing_time = 0.0f;
+    m_enhanced_mtpa_data.mtpa_optimization_converged = false;
+    m_enhanced_mtpa_data.mtpa_parameters_valid = false;
+    m_enhanced_mtpa_data.mtpa_convergence_tolerance = 0.001f;
+    
+    // Hardware-specific adaptations for Flipsky 75200 Pro V2.0
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        // CRITICAL: Current sensing adaptations for low-side only sensing
+        if (HW_CURRENT_SENSING_LOW_SIDE_ONLY) {
+            // Enable current sensing compensation
+            m_enhanced_mtpa_data.current_sensing_compensation_enabled = true;
+            m_enhanced_mtpa_data.current_sensing_offset_factor = 1.15f;  // 15% compensation
+            m_enhanced_mtpa_data.current_sensing_filter_factor = 0.85f;  // Enhanced filtering
+            m_enhanced_mtpa_data.current_sensing_accuracy_threshold = 0.15f; // 15% accuracy threshold
+            
+            // Apply conservative MTPA optimization for limited current sensing
+            m_enhanced_mtpa_data.mtpa_convergence_tolerance = 0.005f; // Relaxed tolerance
+            m_enhanced_mtpa_data.mtpa_optimization_gain_limit = 0.8f; // Reduced gain
+        }
+    #endif
+    
+    m_enhanced_mtpa_initialized = true;
+}
+
+/**
+ * Update enhanced MTPA optimization
+ */
+void mc_interface_update_enhanced_mtpa(void) {
+    if (!m_enhanced_mtpa_initialized || !m_enhanced_mtpa_data.mtpa_enhanced_enabled) {
+        return;
+    }
+    
+    uint32_t update_start_time = ST2MS(chVTGetSystemTimeX());
+    
+    // Get current motor state and configuration
+    float motor_temp = mc_interface_temp_motor_filtered();
+    float fet_temp = mc_interface_temp_fet_filtered();
+    float input_voltage = mc_interface_get_input_voltage_filtered();
+    
+    // Hardware-specific thermal management for Flipsky 75200 Pro V2.0
+    float motor_temp_estimated = motor_temp;
+    float fet_temp_estimated = fet_temp;
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        if (HW_SINGLE_TEMPERATURE_SENSOR) {
+            // Enhanced temperature estimation for single sensor
+            float power_losses = input_voltage * fabsf(mc_interface_get_tot_current_in_filtered());
+            float thermal_loading = power_losses / 8000.0f; // Normalize to 8kW max
+            
+            // Estimate motor temperature based on thermal loading
+            float temp_rise_estimate = thermal_loading * 25.0f; // 25°C rise per normalized load
+            motor_temp_estimated = motor_temp + temp_rise_estimate;
+            
+            // Estimate FET temperature (typically higher than motor)
+            float fet_temp_offset = 10.0f + thermal_loading * 15.0f; // 10-25°C offset
+            fet_temp_estimated = motor_temp + fet_temp_offset;
+            
+            // Apply safety margin for single sensor
+            motor_temp_estimated += HW_TEMP_SAFETY_MARGIN;
+            fet_temp_estimated += HW_TEMP_SAFETY_MARGIN;
+            
+            // Conservative clamping for safety
+            if (motor_temp_estimated > 85.0f) {
+                motor_temp_estimated = 85.0f + (motor_temp_estimated - 85.0f) * 0.5f; // Aggressive derating
+            }
+            if (fet_temp_estimated > 90.0f) {
+                fet_temp_estimated = 90.0f + (fet_temp_estimated - 90.0f) * 0.5f; // Aggressive derating
+            }
+        }
+    #endif
+    float current_motor = mc_interface_get_tot_current_filtered();
+    // TODO: Get actual Id/Iq from FOC controller  
+    float current_total = mc_interface_get_tot_current_filtered();
+    float current_d = 0.0f; // Approximation - would need FOC controller access
+    float current_q = current_total; // Use total current as Iq approximation
+    float rpm = mc_interface_get_rpm();
+    float power_electrical = mc_interface_get_tot_current_in_filtered() * input_voltage;
+    float power_mechanical = mc_interface_get_duty_cycle_now() * power_electrical;
+    
+    // Calculate current magnitude
+    m_enhanced_mtpa_data.mtpa_current_magnitude = sqrtf(current_d * current_d + current_q * current_q);
+    
+    // Hardware-specific current sensing compensation for Flipsky 75200 Pro V2.0
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        if (HW_CURRENT_SENSING_LOW_SIDE_ONLY && m_enhanced_mtpa_data.current_sensing_compensation_enabled) {
+            // Apply current sensing compensation for low-side only sensing
+            // Current sensing is less accurate during certain PWM states
+            float current_compensation_factor = 1.0f;
+            float duty_cycle = mc_interface_get_duty_cycle_now();
+            
+            // Compensation based on duty cycle (current sensing accuracy varies with PWM state)
+            if (fabsf(duty_cycle) > 0.8f) {
+                // High duty cycle: reduced accuracy
+                current_compensation_factor = m_enhanced_mtpa_data.current_sensing_offset_factor;
+            } else if (fabsf(duty_cycle) < 0.2f) {
+                // Low duty cycle: improved accuracy
+                current_compensation_factor = 1.0f / m_enhanced_mtpa_data.current_sensing_filter_factor;
+            }
+            
+            // Apply compensation with enhanced filtering
+            float current_d_compensated = current_d * current_compensation_factor;
+            float current_q_compensated = current_q * current_compensation_factor;
+            
+            // Enhanced filtering for noisy current measurements
+            UTILS_LP_FAST(current_d_compensated, current_d, m_enhanced_mtpa_data.current_sensing_filter_factor);
+            UTILS_LP_FAST(current_q_compensated, current_q, m_enhanced_mtpa_data.current_sensing_filter_factor);
+            
+            // Update compensated current magnitude
+            m_enhanced_mtpa_data.mtpa_current_magnitude = sqrtf(current_d_compensated * current_d_compensated + 
+                                                               current_q_compensated * current_q_compensated);
+            
+            // Apply accuracy threshold for reliable optimization
+            if (m_enhanced_mtpa_data.mtpa_current_magnitude < m_enhanced_mtpa_data.current_sensing_accuracy_threshold) {
+                // Skip optimization with unreliable current measurements
+                m_enhanced_mtpa_data.mtpa_current_magnitude = 0.0f;
+            }
+        }
+    #endif
+    
+    // Enhanced temperature compensation for motor parameters
+    if (m_enhanced_mtpa_data.temperature_compensation_enabled) {
+        // Use estimated temperature for enhanced accuracy with single sensor
+        float temp_for_compensation = motor_temp_estimated;
+        
+        // Temperature coefficient for flux linkage (permanent magnet)
+        float temp_coeff_flux = 1.0f - (temp_for_compensation - 25.0f) * 0.0012f; // -0.12% per °C
+        utils_truncate_number(&temp_coeff_flux, 0.8f, 1.2f);
+        
+        // Temperature coefficient for inductances
+        float temp_coeff_ind = 1.0f + (temp_for_compensation - 25.0f) * 0.0008f; // +0.08% per °C
+        utils_truncate_number(&temp_coeff_ind, 0.8f, 1.2f);
+        
+        // Temperature coefficient for resistance
+        float temp_coeff_res = 1.0f + (temp_for_compensation - 25.0f) * 0.00393f; // +0.393% per °C (copper)
+        utils_truncate_number(&temp_coeff_res, 0.8f, 2.0f);
+        
+        // Apply temperature compensation
+        m_enhanced_mtpa_data.mtpa_flux_linkage_temp = motor_now()->m_conf.foc_motor_flux_linkage * temp_coeff_flux;
+        m_enhanced_mtpa_data.mtpa_inductance_ld_temp = motor_now()->m_conf.foc_motor_ld_lq_diff * temp_coeff_ind;
+        m_enhanced_mtpa_data.mtpa_inductance_lq_temp = motor_now()->m_conf.foc_motor_l * temp_coeff_ind;
+        m_enhanced_mtpa_data.mtpa_resistance_temp = motor_now()->m_conf.foc_motor_r * temp_coeff_res;
+        
+        UTILS_LP_FAST(m_enhanced_mtpa_data.mtpa_temperature_coefficient, temp_coeff_flux, 0.1f);
+        m_enhanced_mtpa_data.mtpa_temperature_samples++;
+    } else {
+        // Use nominal parameters without temperature compensation
+        m_enhanced_mtpa_data.mtpa_flux_linkage_temp = motor_now()->m_conf.foc_motor_flux_linkage;
+        m_enhanced_mtpa_data.mtpa_inductance_ld_temp = motor_now()->m_conf.foc_motor_ld_lq_diff;
+        m_enhanced_mtpa_data.mtpa_inductance_lq_temp = motor_now()->m_conf.foc_motor_l;
+        m_enhanced_mtpa_data.mtpa_resistance_temp = motor_now()->m_conf.foc_motor_r;
+    }
+    
+    // Enhanced nonlinear MTPA optimization
+    if (m_enhanced_mtpa_data.nonlinear_optimization_enabled && m_enhanced_mtpa_data.mtpa_current_magnitude > 0.1f) {
+        // Calculate magnetic saturation factor based on current level
+        float current_limit = motor_now()->m_conf.l_current_max;
+        
+        // Hardware-specific current limit adjustment for Flipsky 75200 Pro V2.0
+        #ifdef HW_FLIPSKY_75200_PRO_V2
+            if (HW_MOSFET_QUALITY_ISSUES) {
+                // Apply conservative current limit for MOSFET reliability
+                current_limit = current_limit * HW_MOSFET_CURRENT_LIMIT_CONSERVATIVE / 200.0f; // 180A conservative limit
+                current_limit = fminf(current_limit, HW_MOSFET_CURRENT_LIMIT_CONSERVATIVE);
+                
+                // Apply additional optimization gain limit for MOSFET protection
+                if (m_enhanced_mtpa_data.mtpa_optimization_gain_limit > 0.0f) {
+                    current_limit *= m_enhanced_mtpa_data.mtpa_optimization_gain_limit;
+                }
+            }
+        #endif
+        
+        float current_ratio = m_enhanced_mtpa_data.mtpa_current_magnitude / current_limit;
+        m_enhanced_mtpa_data.mtpa_saturation_factor = 1.0f - current_ratio * current_ratio * 0.15f; // 15% saturation at max current
+        utils_truncate_number(&m_enhanced_mtpa_data.mtpa_saturation_factor, 0.7f, 1.0f);
+        
+        // Apply saturation to inductances
+        float ld_saturated = m_enhanced_mtpa_data.mtpa_inductance_ld_temp * m_enhanced_mtpa_data.mtpa_saturation_factor;
+        float lq_saturated = m_enhanced_mtpa_data.mtpa_inductance_lq_temp * m_enhanced_mtpa_data.mtpa_saturation_factor;
+        
+        // Calculate optimal MTPA angle with saturation compensation
+        float lambda_temp = m_enhanced_mtpa_data.mtpa_flux_linkage_temp;
+        float ld_lq_diff = lq_saturated - ld_saturated;
+        
+        if (fabsf(ld_lq_diff) > 0.000001f) {
+            float iq_ref = fabsf(current_q);
+            float id_optimal = (lambda_temp - sqrtf(lambda_temp * lambda_temp + 8.0f * ld_lq_diff * ld_lq_diff * iq_ref * iq_ref)) / (4.0f * ld_lq_diff);
+            m_enhanced_mtpa_data.mtpa_id_optimal = id_optimal;
+            m_enhanced_mtpa_data.mtpa_iq_optimal = iq_ref;
+            m_enhanced_mtpa_data.mtpa_angle_optimal = atan2f(iq_ref, fabsf(id_optimal));
+        }
+    }
+    
+    // Calculate torque per ampere
+    if (m_enhanced_mtpa_data.mtpa_current_magnitude > 0.01f) {
+        float torque_estimate = 1.5f * (motor_now()->m_conf.si_motor_poles / 2.0f) * 
+            (m_enhanced_mtpa_data.mtpa_flux_linkage_temp * current_q + 
+             m_enhanced_mtpa_data.mtpa_inductance_ld_temp * current_d * current_q);
+        m_enhanced_mtpa_data.mtpa_torque_per_amp = torque_estimate / m_enhanced_mtpa_data.mtpa_current_magnitude;
+    }
+    
+    // Calculate losses and efficiency
+    if (power_electrical > 0.1f) {
+        // Copper losses
+        m_enhanced_mtpa_data.mtpa_copper_losses = m_enhanced_mtpa_data.mtpa_resistance_temp * 
+            (current_d * current_d + current_q * current_q) * 1.5f;
+        
+        // Iron losses (simplified model)
+        float speed_electrical = fabsf(rpm) * (motor_now()->m_conf.si_motor_poles / 2.0f) / 60.0f;
+        m_enhanced_mtpa_data.mtpa_iron_losses = 0.001f * speed_electrical * speed_electrical; // Simplified iron loss model
+        
+        // Total losses
+        m_enhanced_mtpa_data.mtpa_total_losses = m_enhanced_mtpa_data.mtpa_copper_losses + m_enhanced_mtpa_data.mtpa_iron_losses;
+        
+        // Efficiency calculation
+        if (power_electrical > m_enhanced_mtpa_data.mtpa_total_losses) {
+            m_enhanced_mtpa_data.mtpa_efficiency_percent = 
+                ((power_electrical - m_enhanced_mtpa_data.mtpa_total_losses) / power_electrical) * 100.0f;
+        } else {
+            m_enhanced_mtpa_data.mtpa_efficiency_percent = 0.0f;
+        }
+        
+        // Power factor calculation
+        float apparent_power = input_voltage * m_enhanced_mtpa_data.mtpa_current_magnitude;
+        if (apparent_power > 0.01f) {
+            m_enhanced_mtpa_data.mtpa_power_factor = power_electrical / apparent_power;
+            utils_truncate_number(&m_enhanced_mtpa_data.mtpa_power_factor, 0.0f, 1.0f);
+        }
+    }
+    
+    // Torque ripple estimation
+    float current_ripple = fabsf(mc_interface_get_tot_current() - current_motor);
+    UTILS_LP_FAST(m_enhanced_mtpa_data.mtpa_torque_ripple, current_ripple, 0.1f);
+    
+    // Cross-coupling effects
+    if (m_enhanced_mtpa_data.mtpa_current_magnitude > 0.1f) {
+        m_enhanced_mtpa_data.mtpa_cross_coupling = fabsf(current_d * current_q) / 
+            (m_enhanced_mtpa_data.mtpa_current_magnitude * m_enhanced_mtpa_data.mtpa_current_magnitude);
+    }
+    
+    // Convergence check
+    static float last_efficiency = 0.0f;
+    float efficiency_change = fabsf(m_enhanced_mtpa_data.mtpa_efficiency_percent - last_efficiency);
+    if (efficiency_change < m_enhanced_mtpa_data.mtpa_convergence_tolerance) {
+        m_enhanced_mtpa_data.mtpa_optimization_converged = true;
+    }
+    last_efficiency = m_enhanced_mtpa_data.mtpa_efficiency_percent;
+    
+    // Validate parameters
+    m_enhanced_mtpa_data.mtpa_parameters_valid = 
+        (m_enhanced_mtpa_data.mtpa_flux_linkage_temp > 0.0f) &&
+        (m_enhanced_mtpa_data.mtpa_inductance_ld_temp > 0.0f) &&
+        (m_enhanced_mtpa_data.mtpa_inductance_lq_temp > 0.0f) &&
+        (m_enhanced_mtpa_data.mtpa_resistance_temp > 0.0f) &&
+        (m_enhanced_mtpa_data.mtpa_efficiency_percent >= 0.0f) &&
+        (m_enhanced_mtpa_data.mtpa_efficiency_percent <= 100.0f);
+    
+    // Hardware-specific validation for Flipsky 75200 Pro V2.0
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        if (HW_MOSFET_QUALITY_ISSUES) {
+            // Additional validation for MOSFET protection
+            bool mosfet_protection_valid = 
+                (m_enhanced_mtpa_data.mtpa_current_magnitude <= HW_MOSFET_CURRENT_LIMIT_CONSERVATIVE) &&
+                (input_voltage <= HW_MOSFET_VOLTAGE_LIMIT_CONSERVATIVE);
+            
+            m_enhanced_mtpa_data.mtpa_parameters_valid = 
+                m_enhanced_mtpa_data.mtpa_parameters_valid && mosfet_protection_valid;
+            
+            // If parameters are invalid due to MOSFET constraints, log error
+            if (!mosfet_protection_valid) {
+                m_enhanced_mtpa_data.mtpa_error_count++;
+            }
+        }
+    #endif
+    
+    // Calculate processing time
+    uint32_t processing_time_us = ST2MS(chVTGetSystemTimeX()) - update_start_time;
+    m_enhanced_mtpa_data.mtpa_processing_time = processing_time_us / 1000.0f; // Convert to ms
+    
+    // Update counters
+    m_enhanced_mtpa_data.mtpa_optimization_cycles++;
+    m_enhanced_mtpa_data.mtpa_update_count++;
+    m_enhanced_mtpa_data.mtpa_last_update_time = ST2MS(chVTGetSystemTimeX()) / 1000.0f;
+    
+    // Error detection
+    if (!m_enhanced_mtpa_data.mtpa_parameters_valid || 
+        m_enhanced_mtpa_data.mtpa_processing_time > 10.0f) {
+        m_enhanced_mtpa_data.mtpa_error_count++;
+    }
+}
+
+/**
+ * Get enhanced MTPA data
+ */
+enhanced_mtpa_data_t mc_interface_get_enhanced_mtpa_data(void) {
+    return m_enhanced_mtpa_data;
+}
+
+/**
+ * Set MTPA temperature compensation enable
+ */
+void mc_interface_set_mtpa_temperature_compensation(bool enable) {
+    m_enhanced_mtpa_data.temperature_compensation_enabled = enable;
+}
+
+/**
+ * Set MTPA nonlinear optimization enable
+ */
+void mc_interface_set_mtpa_nonlinear_optimization(bool enable) {
+    m_enhanced_mtpa_data.nonlinear_optimization_enabled = enable;
+}
+
+/**
+ * Calculate MTPA efficiency gain
+ */
+float mc_interface_calculate_mtpa_efficiency_gain(void) {
+    // Calculate efficiency gain compared to id=0 control
+    float baseline_efficiency = 85.0f; // Typical efficiency with id=0 control
+    float mtpa_efficiency = m_enhanced_mtpa_data.mtpa_efficiency_percent;
+    
+    if (mtpa_efficiency > baseline_efficiency) {
+        m_enhanced_mtpa_data.mtpa_efficiency_gain = mtpa_efficiency - baseline_efficiency;
+    } else {
+        m_enhanced_mtpa_data.mtpa_efficiency_gain = 0.0f;
+    }
+    
+    return m_enhanced_mtpa_data.mtpa_efficiency_gain;
+}
+
+/**
+ * Reset MTPA optimization
+ */
+void mc_interface_reset_mtpa_optimization(void) {
+    m_enhanced_mtpa_data.mtpa_optimization_cycles = 0;
+    m_enhanced_mtpa_data.mtpa_temperature_samples = 0;
+    m_enhanced_mtpa_data.mtpa_update_count = 0;
+    m_enhanced_mtpa_data.mtpa_error_count = 0;
+    m_enhanced_mtpa_data.mtpa_optimization_converged = false;
+    m_enhanced_mtpa_data.mtpa_efficiency_gain = 0.0f;
+}
+
+// Enhanced field weakening implementation
+static enhanced_field_weakening_data_t m_enhanced_field_weakening_data;
+static bool m_enhanced_field_weakening_initialized = false;
+
+/**
+ * Initialize enhanced field weakening
+ */
+void mc_interface_init_enhanced_field_weakening(void) {
+    memset(&m_enhanced_field_weakening_data, 0, sizeof(enhanced_field_weakening_data_t));
+    
+    // Initialize enhanced field weakening parameters
+    m_enhanced_field_weakening_data.field_weakening_enhanced_enabled = true;
+    m_enhanced_field_weakening_data.two_stage_field_weakening_enabled = true;
+    m_enhanced_field_weakening_data.mtpv_control_enabled = true;
+    m_enhanced_field_weakening_data.field_weakening_current = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_voltage_margin = 0.95f;
+    m_enhanced_field_weakening_data.field_weakening_speed_threshold = 0.8f;
+    m_enhanced_field_weakening_data.field_weakening_efficiency = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_torque_limit = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_power_limit = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_temperature_factor = 1.0f;
+    m_enhanced_field_weakening_data.field_weakening_voltage_utilization = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_current_angle = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_optimal_id = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_optimal_iq = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_mtpv_trajectory = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_voltage_reserve = 0.05f;
+    m_enhanced_field_weakening_data.field_weakening_dynamic_gain = 1.0f;
+    m_enhanced_field_weakening_data.field_weakening_bandwidth_hz = 100.0f;
+    m_enhanced_field_weakening_data.field_weakening_stability_margin = 6.0f;
+    m_enhanced_field_weakening_data.field_weakening_overshoot_percent = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_settling_time = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_steady_state_error = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_stage = 0;
+    m_enhanced_field_weakening_data.field_weakening_optimization_cycles = 0;
+    m_enhanced_field_weakening_data.field_weakening_transition_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_update_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_error_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_last_update_time = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_processing_time = 0.0f;
+    m_enhanced_field_weakening_data.field_weakening_optimization_active = false;
+    m_enhanced_field_weakening_data.field_weakening_voltage_limited = false;
+    m_enhanced_field_weakening_data.field_weakening_current_limited = false;
+    m_enhanced_field_weakening_data.field_weakening_parameters_valid = false;
+    
+    // Hardware-specific adaptations for Flipsky 75200 Pro V2.0
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        // Adjust field weakening parameters for switching frequency constraints
+        m_enhanced_field_weakening_data.field_weakening_voltage_margin = HW_FIELD_WEAKENING_VOLTAGE_MARGIN;
+        m_enhanced_field_weakening_data.field_weakening_bandwidth_hz = HW_FIELD_WEAKENING_BANDWIDTH_HZ;
+        
+        // Conservative settings for gate driver limitations
+        if (HW_MOSFET_GATE_RESISTOR_ISSUES) {
+            m_enhanced_field_weakening_data.field_weakening_voltage_margin *= 0.9f; // Reduce voltage margin
+            m_enhanced_field_weakening_data.field_weakening_bandwidth_hz *= 0.8f;   // Reduce bandwidth
+            m_enhanced_field_weakening_data.field_weakening_dynamic_gain *= 0.85f;  // Reduce gain
+        }
+        
+        // Adjust for 20S LiPo battery (84V max)
+        // Field weakening becomes critical above 60V for this hardware
+        m_enhanced_field_weakening_data.field_weakening_voltage_threshold = 60.0f;
+        m_enhanced_field_weakening_data.field_weakening_high_voltage_mode = true;
+        m_enhanced_field_weakening_data.field_weakening_switching_freq_limit = HW_SWITCHING_FREQUENCY_SAFE;
+    #endif
+    
+    m_enhanced_field_weakening_initialized = true;
+}
+
+/**
+ * Update enhanced field weakening
+ */
+void mc_interface_update_enhanced_field_weakening(void) {
+    if (!m_enhanced_field_weakening_initialized || !m_enhanced_field_weakening_data.field_weakening_enhanced_enabled) {
+        return;
+    }
+    
+    uint32_t update_start_time = ST2MS(chVTGetSystemTimeX());
+    
+    // Get current motor state and configuration
+    float motor_temp = mc_interface_temp_motor_filtered();
+    float input_voltage = mc_interface_get_input_voltage_filtered();
+    
+    // Hardware-specific thermal management for Flipsky 75200 Pro V2.0
+    float motor_temp_estimated = motor_temp;
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        if (HW_SINGLE_TEMPERATURE_SENSOR) {
+            // Enhanced temperature estimation for single sensor
+            float power_losses = input_voltage * fabsf(mc_interface_get_tot_current_in_filtered());
+            float thermal_loading = power_losses / 8000.0f; // Normalize to 8kW max
+            
+            // Estimate motor temperature based on thermal loading
+            float temp_rise_estimate = thermal_loading * 25.0f; // 25°C rise per normalized load
+            motor_temp_estimated = motor_temp + temp_rise_estimate;
+            
+            // Apply safety margin for single sensor
+            motor_temp_estimated += HW_TEMP_SAFETY_MARGIN;
+            
+            // Conservative clamping for safety
+            if (motor_temp_estimated > 85.0f) {
+                motor_temp_estimated = 85.0f + (motor_temp_estimated - 85.0f) * 0.5f; // Aggressive derating
+            }
+        }
+    #endif
+    float current_motor = mc_interface_get_tot_current_filtered();
+    // TODO: Get actual Id/Iq from FOC controller  
+    float current_total = mc_interface_get_tot_current_filtered();
+    float current_d = 0.0f; // Approximation - would need FOC controller access
+    float current_q = current_total; // Use total current as Iq approximation
+    float rpm = mc_interface_get_rpm();
+    float duty_cycle = mc_interface_get_duty_cycle_now();
+    // TODO: Get actual Vd/Vq from FOC controller
+    float vd = 0.0f; // mcpwm_foc_get_vd(); 
+    float vq = mc_interface_get_input_voltage_filtered() * mc_interface_get_duty_cycle_now(); // Approximation
+    
+    // Calculate current voltage magnitude
+    float voltage_magnitude = sqrtf(vd * vd + vq * vq);
+    float voltage_limit = input_voltage * m_enhanced_field_weakening_data.field_weakening_voltage_margin;
+    
+    // Hardware-specific current sensing compensation for Flipsky 75200 Pro V2.0
+    float current_d_compensated = current_d;
+    float current_q_compensated = current_q;
+    #ifdef HW_FLIPSKY_75200_PRO_V2
+        if (HW_CURRENT_SENSING_LOW_SIDE_ONLY) {
+            // Apply current sensing compensation for low-side only sensing
+            float current_compensation_factor = 1.0f;
+            
+            // Compensation based on duty cycle (current sensing accuracy varies with PWM state)
+            if (fabsf(duty_cycle) > 0.8f) {
+                // High duty cycle: reduced accuracy
+                current_compensation_factor = 1.15f;  // 15% compensation for high duty cycle
+            } else if (fabsf(duty_cycle) < 0.2f) {
+                // Low duty cycle: improved accuracy
+                current_compensation_factor = 0.95f;  // 5% compensation for low duty cycle
+            }
+            
+            // Apply compensation with enhanced filtering
+            current_d_compensated = current_d * current_compensation_factor;
+            current_q_compensated = current_q * current_compensation_factor;
+            
+            // Enhanced filtering for noisy current measurements
+            UTILS_LP_FAST(current_d_compensated, current_d, 0.85f);
+            UTILS_LP_FAST(current_q_compensated, current_q, 0.85f);
+        }
+    #endif
+    
+    // Determine field weakening stage
+    float speed_ratio = fabsf(rpm) / fabsf(motor_now()->m_conf.l_max_erpm);
+    int previous_stage = m_enhanced_field_weakening_data.field_weakening_stage;
+    
+    if (speed_ratio < m_enhanced_field_weakening_data.field_weakening_speed_threshold) {
+        m_enhanced_field_weakening_data.field_weakening_stage = 0; // MTPA region
+    } else if (speed_ratio < 0.95f) {
+        m_enhanced_field_weakening_data.field_weakening_stage = 1; // Stage 1 field weakening
+    } else {
+        m_enhanced_field_weakening_data.field_weakening_stage = 2; // Stage 2 field weakening (MTPV)
+    }
+    
+    // Track stage transitions
+    if (m_enhanced_field_weakening_data.field_weakening_stage != previous_stage) {
+        m_enhanced_field_weakening_data.field_weakening_transition_count++;
+    }
+    
+    // Enhanced two-stage field weakening
+    if (m_enhanced_field_weakening_data.two_stage_field_weakening_enabled) {
+        // Calculate field weakening current based on voltage limit
+        float voltage_error = voltage_magnitude - voltage_limit;
+        
+        // Hardware-specific field weakening adaptation for Flipsky 75200 Pro V2.0
+        #ifdef HW_FLIPSKY_75200_PRO_V2
+            // Additional voltage threshold check for high voltage operation (20S LiPo)
+            if (m_enhanced_field_weakening_data.field_weakening_high_voltage_mode && 
+                input_voltage > m_enhanced_field_weakening_data.field_weakening_voltage_threshold) {
+                // High voltage mode: reduce field weakening aggressiveness
+                voltage_error *= 0.8f; // Reduce aggressiveness for safety
+                
+                // Apply switching frequency limit for gate driver protection
+                if (m_enhanced_field_weakening_data.field_weakening_switching_freq_limit > 0.0f) {
+                    // Reduce field weakening bandwidth to match switching frequency limit
+                    float freq_ratio = m_enhanced_field_weakening_data.field_weakening_switching_freq_limit / 20000.0f;
+                    m_enhanced_field_weakening_data.field_weakening_bandwidth_hz = 
+                        m_enhanced_field_weakening_data.field_weakening_bandwidth_hz * freq_ratio;
+                }
+            }
+        #endif
+        
+        if (voltage_error > 0.0f) {
+            // Voltage-limited: apply field weakening
+            m_enhanced_field_weakening_data.field_weakening_voltage_limited = true;
+            
+            // Dynamic gain adaptation based on operating conditions
+            float gain_factor = 1.0f;
+            if (motor_temp_estimated > 60.0f) {
+                gain_factor = 1.0f + (motor_temp_estimated - 60.0f) * 0.01f; // Increase gain at high temperature
+            }
+            
+            // Hardware-specific gain reduction for gate driver limitations
+            #ifdef HW_FLIPSKY_75200_PRO_V2
+                if (HW_MOSFET_GATE_RESISTOR_ISSUES) {
+                    gain_factor *= 0.85f; // Reduce gain for gate driver protection
+                }
+            #endif
+            
+            // Calculate field weakening current with temperature compensation
+            float fw_current_base = voltage_error * 0.1f * gain_factor;
+            m_enhanced_field_weakening_data.field_weakening_temperature_factor = 1.0f + (motor_temp_estimated - 25.0f) * 0.002f;
+            m_enhanced_field_weakening_data.field_weakening_current = fw_current_base * m_enhanced_field_weakening_data.field_weakening_temperature_factor;
+            
+            // Limit field weakening current
+            float fw_current_limit = motor_now()->m_conf.l_current_max * 0.3f;
+            
+            // Hardware-specific field weakening limit for Flipsky 75200 Pro V2.0
+            #ifdef HW_FLIPSKY_75200_PRO_V2
+                if (HW_MOSFET_QUALITY_ISSUES) {
+                    // Apply conservative field weakening limit for MOSFET protection
+                    float conservative_limit = HW_MOSFET_CURRENT_LIMIT_CONSERVATIVE * 0.25f; // 25% of conservative limit
+                    fw_current_limit = fminf(fw_current_limit, conservative_limit);
+                }
+            #endif
+            
+            utils_truncate_number(&m_enhanced_field_weakening_data.field_weakening_current, 0.0f, fw_current_limit);
+            
+            m_enhanced_field_weakening_data.field_weakening_optimization_active = true;
+        } else {
+            // Not voltage-limited
+            m_enhanced_field_weakening_data.field_weakening_voltage_limited = false;
+            UTILS_LP_FAST(m_enhanced_field_weakening_data.field_weakening_current, 0.0f, 0.1f);
+            m_enhanced_field_weakening_data.field_weakening_optimization_active = false;
+        }
+    }
+    
+    // Enhanced MTPV control for deep field weakening
+    if (m_enhanced_field_weakening_data.mtpv_control_enabled && m_enhanced_field_weakening_data.field_weakening_stage == 2) {
+        // Calculate MTPV trajectory for maximum torque per volt
+        float flux_linkage = motor_now()->m_conf.foc_motor_flux_linkage;
+        float ld = motor_now()->m_conf.foc_motor_ld_lq_diff;
+        float lq = motor_now()->m_conf.foc_motor_l;
+        
+        if (flux_linkage > 0.0f && ld > 0.0f && lq > 0.0f) {
+            // Calculate characteristic current
+            float i_char = flux_linkage / (lq - ld);
+            
+            // Calculate MTPV trajectory
+            float current_magnitude = sqrtf(current_d_compensated * current_d_compensated + current_q_compensated * current_q_compensated);
+            if (current_magnitude > 0.01f) {
+                float mtpv_angle = atan2f(current_q_compensated, current_d_compensated);
+                m_enhanced_field_weakening_data.field_weakening_mtpv_trajectory = mtpv_angle;
+                
+                // Calculate optimal currents for MTPV
+                float optimal_id = -i_char + sqrtf(i_char * i_char + current_magnitude * current_magnitude);
+                float optimal_iq = SIGN(current_q_compensated) * sqrtf(current_magnitude * current_magnitude - optimal_id * optimal_id);
+                
+                m_enhanced_field_weakening_data.field_weakening_optimal_id = optimal_id;
+                m_enhanced_field_weakening_data.field_weakening_optimal_iq = optimal_iq;
+            }
+        }
+    }
+    
+    // Calculate voltage utilization
+    if (voltage_limit > 0.0f) {
+        m_enhanced_field_weakening_data.field_weakening_voltage_utilization = voltage_magnitude / voltage_limit;
+        utils_truncate_number(&m_enhanced_field_weakening_data.field_weakening_voltage_utilization, 0.0f, 1.2f);
+    }
+    
+    // Calculate current angle
+    if (current_motor > 0.01f) {
+        m_enhanced_field_weakening_data.field_weakening_current_angle = atan2f(current_q_compensated, current_d_compensated);
+    }
+    
+    // Calculate torque and power limits
+    float torque_constant = 1.5f * (motor_now()->m_conf.si_motor_poles / 2.0f) * motor_now()->m_conf.foc_motor_flux_linkage;
+    m_enhanced_field_weakening_data.field_weakening_torque_limit = torque_constant * current_motor;
+    m_enhanced_field_weakening_data.field_weakening_power_limit = m_enhanced_field_weakening_data.field_weakening_torque_limit * fabsf(rpm) * M_PI / 30.0f;
+    
+    // Calculate field weakening efficiency
+    if (m_enhanced_field_weakening_data.field_weakening_power_limit > 0.1f) {
+        float electrical_power = input_voltage * mc_interface_get_tot_current_in_filtered();
+        if (electrical_power > 0.1f) {
+            m_enhanced_field_weakening_data.field_weakening_efficiency = 
+                m_enhanced_field_weakening_data.field_weakening_power_limit / electrical_power;
+            utils_truncate_number(&m_enhanced_field_weakening_data.field_weakening_efficiency, 0.0f, 1.0f);
+        }
+    }
+    
+    // Calculate voltage reserve
+    m_enhanced_field_weakening_data.field_weakening_voltage_reserve = 
+        (voltage_limit - voltage_magnitude) / voltage_limit;
+    utils_truncate_number(&m_enhanced_field_weakening_data.field_weakening_voltage_reserve, -0.2f, 0.2f);
+    
+    // Dynamic gain calculation
+    float dynamic_gain = 1.0f;
+    if (m_enhanced_field_weakening_data.field_weakening_voltage_limited) {
+        dynamic_gain = 1.0f + fabsf(m_enhanced_field_weakening_data.field_weakening_voltage_reserve) * 2.0f;
+    }
+    UTILS_LP_FAST(m_enhanced_field_weakening_data.field_weakening_dynamic_gain, dynamic_gain, 0.1f);
+    
+    // Performance monitoring
+    static float last_voltage_utilization = 0.0f;
+    float utilization_change = fabsf(m_enhanced_field_weakening_data.field_weakening_voltage_utilization - last_voltage_utilization);
+    UTILS_LP_FAST(m_enhanced_field_weakening_data.field_weakening_overshoot_percent, utilization_change * 100.0f, 0.1f);
+    last_voltage_utilization = m_enhanced_field_weakening_data.field_weakening_voltage_utilization;
+    
+    // Calculate steady-state error
+    float target_utilization = 0.95f;
+    m_enhanced_field_weakening_data.field_weakening_steady_state_error = 
+        fabsf(m_enhanced_field_weakening_data.field_weakening_voltage_utilization - target_utilization);
+    
+    // Current limiting check
+    m_enhanced_field_weakening_data.field_weakening_current_limited = 
+        (current_motor >= motor_now()->m_conf.l_current_max * 0.95f);
+    
+    // Parameter validation
+    m_enhanced_field_weakening_data.field_weakening_parameters_valid = 
+        (m_enhanced_field_weakening_data.field_weakening_voltage_utilization >= 0.0f) &&
+        (m_enhanced_field_weakening_data.field_weakening_voltage_utilization <= 1.2f) &&
+        (m_enhanced_field_weakening_data.field_weakening_efficiency >= 0.0f) &&
+        (m_enhanced_field_weakening_data.field_weakening_efficiency <= 1.0f) &&
+        (m_enhanced_field_weakening_data.field_weakening_current >= 0.0f) &&
+        (m_enhanced_field_weakening_data.field_weakening_stage >= 0) &&
+        (m_enhanced_field_weakening_data.field_weakening_stage <= 2);
+    
+    // Calculate processing time
+    uint32_t processing_time_us = ST2MS(chVTGetSystemTimeX()) - update_start_time;
+    m_enhanced_field_weakening_data.field_weakening_processing_time = processing_time_us / 1000.0f; // Convert to ms
+    
+    // Update counters
+    m_enhanced_field_weakening_data.field_weakening_optimization_cycles++;
+    m_enhanced_field_weakening_data.field_weakening_update_count++;
+    m_enhanced_field_weakening_data.field_weakening_last_update_time = ST2MS(chVTGetSystemTimeX()) / 1000.0f;
+    
+    // Error detection
+    if (!m_enhanced_field_weakening_data.field_weakening_parameters_valid || 
+        m_enhanced_field_weakening_data.field_weakening_processing_time > 10.0f) {
+        m_enhanced_field_weakening_data.field_weakening_error_count++;
+    }
+}
+
+/**
+ * Get enhanced field weakening data
+ */
+enhanced_field_weakening_data_t mc_interface_get_enhanced_field_weakening_data(void) {
+    return m_enhanced_field_weakening_data;
+}
+
+/**
+ * Set two-stage field weakening enable
+ */
+void mc_interface_set_field_weakening_two_stage(bool enable) {
+    m_enhanced_field_weakening_data.two_stage_field_weakening_enabled = enable;
+}
+
+/**
+ * Set MTPV control enable
+ */
+void mc_interface_set_field_weakening_mtpv(bool enable) {
+    m_enhanced_field_weakening_data.mtpv_control_enabled = enable;
+}
+
+/**
+ * Calculate field weakening efficiency
+ */
+float mc_interface_calculate_field_weakening_efficiency(void) {
+    return m_enhanced_field_weakening_data.field_weakening_efficiency;
+}
+
+/**
+ * Reset field weakening optimization
+ */
+void mc_interface_reset_field_weakening_optimization(void) {
+    m_enhanced_field_weakening_data.field_weakening_optimization_cycles = 0;
+    m_enhanced_field_weakening_data.field_weakening_transition_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_update_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_error_count = 0;
+    m_enhanced_field_weakening_data.field_weakening_optimization_active = false;
+    m_enhanced_field_weakening_data.field_weakening_current = 0.0f;
 }

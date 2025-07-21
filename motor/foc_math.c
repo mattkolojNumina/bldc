@@ -19,6 +19,7 @@
 
 #include "foc_math.h"
 #include "utils_math.h"
+#include "mc_interface.h"
 #include <math.h>
 
 // See http://cas.ensmp.fr/~praly/Telechargement/Journaux/2010-IEEE_TPEL-Lee-Hong-Nam-Ortega-Praly-Astolfi.pdf
@@ -27,9 +28,10 @@ void foc_observer_update(float v_alpha, float v_beta, float i_alpha, float i_bet
 
 	mc_configuration *conf_now = motor->m_conf;
 
-	float R = conf_now->foc_motor_r;
+	// Use adaptive parameters if enabled
+	float R = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_resistance() : conf_now->foc_motor_r;
 	float L = conf_now->foc_motor_l;
-	float lambda = conf_now->foc_motor_flux_linkage;
+	float lambda = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
 
 	// Saturation compensation
 	switch(conf_now->foc_sat_comp_mode) {
@@ -761,6 +763,6 @@ void foc_precalc_values(motor_all_state_t *motor) {
 	motor->p_ld = conf_now->foc_motor_l - conf_now->foc_motor_ld_lq_diff * 0.5;
 	motor->p_inv_ld_lq = (1.0 / motor->p_lq - 1.0 / motor->p_ld);
 	motor->p_v2_v3_inv_avg_half = (0.5 / motor->p_lq + 0.5 / motor->p_ld) * 0.9; // With the 0.9 we undo the adjustment from the detection
-	motor->m_observer_state.lambda_est = conf_now->foc_motor_flux_linkage;
+	motor->m_observer_state.lambda_est = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
 	motor->p_duty_norm = TWO_BY_SQRT3 / conf_now->foc_overmod_factor;
 }

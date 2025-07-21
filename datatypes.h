@@ -589,6 +589,29 @@ typedef struct {
 	// BMS Configuration
 	bms_config bms;
 
+	// Adaptive Parameter System
+	float foc_adaptive_kp_temp_coeff;
+	float foc_adaptive_ki_temp_coeff;
+	float foc_adaptive_resistance_temp_coeff;
+	float foc_adaptive_flux_temp_coeff;
+	bool foc_adaptive_enable;
+	float foc_adaptive_temp_reference;
+	float foc_adaptive_param_lpf_tau;
+	
+	// Telemetry System
+	bool telemetry_enable;
+	float telemetry_rate_hz;
+	uint16_t telemetry_can_id;
+	bool telemetry_include_adaptive_params;
+	bool telemetry_include_efficiency;
+	
+	// Field Optimization
+	bool field_opt_enable;
+	float field_opt_learning_rate;
+	float field_opt_performance_weight;
+	uint16_t field_opt_sample_buffer_size;
+	bool field_opt_auto_tune;
+
 	// Protect from flash corruption.
 	uint16_t crc;
 } mc_configuration;
@@ -1422,6 +1445,100 @@ typedef struct {
 	uint8_t num_vescs;
 } setup_values;
 
+// Adaptive Parameter System Structures
+typedef struct {
+	float kp_adapted;
+	float ki_adapted;
+	float resistance_adapted;
+	float flux_linkage_adapted;
+	float temp_motor_filtered;
+	float temp_fet_filtered;
+	float adaptation_factor;
+	bool adaptation_active;
+	uint32_t adaptation_update_count;
+	systime_t last_update_time;
+} adaptive_params_state_t;
+
+typedef struct {
+	float electrical_power;
+	float mechanical_power;
+	float efficiency_percent;
+	float motor_temp;
+	float fet_temp;
+	float rpm;
+	float current_motor;
+	float current_battery;
+	float voltage_battery;
+	float duty_cycle;
+	float power_factor;
+	float thd_current;
+	uint32_t timestamp_ms;
+} performance_metrics_t;
+
+// Enhanced Telemetry Structure
+typedef struct {
+	// Core measurements
+	float motor_temp_c;
+	float fet_temp_c;
+	float battery_voltage_v;
+	float motor_current_a;
+	float battery_current_a;
+	float motor_rpm;
+	float duty_cycle_percent;
+	
+	// Power and efficiency
+	float electrical_power_w;
+	float mechanical_power_w;
+	float efficiency_percent;
+	float power_factor;
+	
+	// Adaptive parameters
+	float kp_current;
+	float ki_current;
+	float resistance_current;
+	float flux_linkage_current;
+	float adaptation_factor;
+	bool adaptation_active;
+	
+	// Thermal management
+	float thermal_derating_factor;
+	uint8_t thermal_state;
+	bool thermal_limit_active;
+	
+	// Field optimization
+	float performance_score;
+	float learning_rate_current;
+	uint16_t optimization_cycles;
+	bool auto_tune_active;
+	
+	// System status
+	uint32_t timestamp_ms;
+	uint16_t fault_code;
+	uint8_t system_state;
+} hub_motor_telemetry_t;
+
+// Field Optimization Structures
+typedef struct {
+	float operating_conditions[8];  // Speed, load, temp, voltage, duty, current, power, efficiency
+	float control_parameters[6];    // Kp, Ki, observer gain, switching freq, etc.
+	float performance_metric;       // Combined efficiency and smoothness score
+	uint32_t timestamp;
+} field_optimization_sample_t;
+
+typedef struct {
+	field_optimization_sample_t *samples;
+	uint16_t buffer_size;
+	uint16_t current_size;
+	uint16_t write_index;
+	float optimal_parameters[6];
+	float current_performance;
+	float best_performance;
+	float learning_rate;
+	uint32_t optimization_cycles;
+	bool auto_tune_enabled;
+	systime_t last_optimization_time;
+} field_optimization_state_t;
+
 typedef struct {
 	systime_t time_start;
 	double samples;
@@ -1450,5 +1567,116 @@ typedef struct __attribute__((packed)) {
 	uint32_t hw_config_init_flag;
 	uint8_t hw_config[128];
 } backup_data;
+
+// Enhanced HFI sensorless control data structure
+typedef struct {
+	bool hfi_enhanced_enabled;
+	bool voltage_adaptation_enabled;
+	float hfi_signal_quality;
+	float hfi_voltage_scale;
+	float hfi_noise_level;
+	float hfi_angle_confidence;
+	float hfi_position_error;
+	float hfi_current_ripple;
+	float hfi_voltage_injection;
+	float hfi_frequency_adapt;
+	float hfi_gain_compensation;
+	float hfi_thermal_drift;
+	int hfi_calibration_samples;
+	int hfi_quality_samples;
+	float hfi_snr_db;
+	float hfi_bandwidth_hz;
+	float hfi_phase_margin;
+	float hfi_gain_margin;
+	uint32_t hfi_update_cycles;
+	uint32_t hfi_error_count;
+	float hfi_last_update_time;
+	float hfi_processing_time;
+	bool hfi_zero_speed_capable;
+	bool hfi_calibration_complete;
+	float hfi_temperature_compensation;
+} enhanced_hfi_data_t;
+
+// Enhanced MTPA optimization data structure
+typedef struct {
+	bool mtpa_enhanced_enabled;
+	bool temperature_compensation_enabled;
+	bool nonlinear_optimization_enabled;
+	float mtpa_efficiency_gain;
+	float mtpa_angle_optimal;
+	float mtpa_id_optimal;
+	float mtpa_iq_optimal;
+	float mtpa_current_magnitude;
+	float mtpa_torque_per_amp;
+	float mtpa_flux_linkage_temp;
+	float mtpa_inductance_ld_temp;
+	float mtpa_inductance_lq_temp;
+	float mtpa_resistance_temp;
+	float mtpa_temperature_coefficient;
+	float mtpa_saturation_factor;
+	float mtpa_cross_coupling;
+	float mtpa_iron_losses;
+	float mtpa_copper_losses;
+	float mtpa_total_losses;
+	float mtpa_efficiency_percent;
+	float mtpa_power_factor;
+	float mtpa_torque_ripple;
+	int mtpa_optimization_cycles;
+	int mtpa_temperature_samples;
+	uint32_t mtpa_update_count;
+	uint32_t mtpa_error_count;
+	float mtpa_last_update_time;
+	float mtpa_processing_time;
+	bool mtpa_optimization_converged;
+	bool mtpa_parameters_valid;
+	float mtpa_convergence_tolerance;
+	// Hardware-specific current sensing compensation fields
+	bool current_sensing_compensation_enabled;
+	float current_sensing_offset_factor;
+	float current_sensing_filter_factor;
+	float current_sensing_accuracy_threshold;
+	float mtpa_optimization_gain_limit;
+} enhanced_mtpa_data_t;
+
+// Enhanced field weakening data structure
+typedef struct {
+	bool field_weakening_enhanced_enabled;
+	bool two_stage_field_weakening_enabled;
+	bool mtpv_control_enabled;
+	float field_weakening_current;
+	float field_weakening_voltage_margin;
+	float field_weakening_speed_threshold;
+	float field_weakening_efficiency;
+	float field_weakening_torque_limit;
+	float field_weakening_power_limit;
+	float field_weakening_temperature_factor;
+	float field_weakening_voltage_utilization;
+	float field_weakening_current_angle;
+	float field_weakening_optimal_id;
+	float field_weakening_optimal_iq;
+	float field_weakening_mtpv_trajectory;
+	float field_weakening_voltage_reserve;
+	float field_weakening_dynamic_gain;
+	float field_weakening_bandwidth_hz;
+	float field_weakening_stability_margin;
+	float field_weakening_overshoot_percent;
+	float field_weakening_settling_time;
+	float field_weakening_steady_state_error;
+	int field_weakening_stage;
+	int field_weakening_optimization_cycles;
+	int field_weakening_transition_count;
+	uint32_t field_weakening_update_count;
+	uint32_t field_weakening_error_count;
+	float field_weakening_last_update_time;
+	float field_weakening_processing_time;
+	bool field_weakening_optimization_active;
+	bool field_weakening_voltage_limited;
+	bool field_weakening_current_limited;
+	bool field_weakening_parameters_valid;
+	// Hardware-specific fields for Flipsky 75200 Pro V2.0
+	float field_weakening_voltage_threshold;
+	bool field_weakening_high_voltage_mode;
+	float field_weakening_switching_freq_limit;
+} enhanced_field_weakening_data_t;
 
 #endif /* DATATYPES_H_ */

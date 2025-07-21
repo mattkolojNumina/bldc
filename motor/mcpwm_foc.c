@@ -588,6 +588,15 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 			"[en]",
 			terminal_plot_hfi);
 
+	// Initialize enhanced HFI sensorless control
+	mc_interface_init_enhanced_hfi();
+
+	// Initialize enhanced MTPA optimization
+	mc_interface_init_enhanced_mtpa();
+
+	// Initialize enhanced field weakening
+	mc_interface_init_enhanced_field_weakening();
+
 	m_init_done = true;
 }
 
@@ -3310,7 +3319,8 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 			motor_now->m_motor_state.vq_int = motor_now->m_motor_state.vq;
 			if (conf_now->foc_cc_decoupling == FOC_CC_DECOUPLING_BEMF ||
 					conf_now->foc_cc_decoupling == FOC_CC_DECOUPLING_CROSS_BEMF) {
-				motor_now->m_motor_state.vq_int -= motor_now->m_pll_speed * conf_now->foc_motor_flux_linkage;
+				float flux_linkage = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
+				motor_now->m_motor_state.vq_int -= motor_now->m_pll_speed * flux_linkage;
 			}
 		}
 		motor_now->m_was_control_duty = control_duty;
@@ -3511,7 +3521,7 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		// Apply MTPA. See: https://github.com/vedderb/bldc/pull/179
 		const float ld_lq_diff = conf_now->foc_motor_ld_lq_diff;
 		if (conf_now->foc_mtpa_mode != MTPA_MODE_OFF && ld_lq_diff != 0.0) {
-			const float lambda = conf_now->foc_motor_flux_linkage;
+			const float lambda = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
 
 			float iq_ref = iq_set_tmp;
 			if (conf_now->foc_mtpa_mode == MTPA_MODE_IQ_MEASURED) {
@@ -3671,7 +3681,8 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 
 		if (conf_now->foc_cc_decoupling == FOC_CC_DECOUPLING_BEMF ||
 				conf_now->foc_cc_decoupling == FOC_CC_DECOUPLING_CROSS_BEMF) {
-			motor_now->m_motor_state.vq_int -= motor_now->m_pll_speed * conf_now->foc_motor_flux_linkage;
+			float flux_linkage = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
+			motor_now->m_motor_state.vq_int -= motor_now->m_pll_speed * flux_linkage;
 		}
 
 		// Update corresponding modulation
@@ -3989,8 +4000,9 @@ static void timer_update(motor_all_state_t *motor, float dt) {
 		// Set observer state to help it start tracking when leaving open loop.
 		float s, c;
 		utils_fast_sincos_better(motor->m_phase_now_observer_override + SIGN(motor->m_motor_state.duty_now) * M_PI / 4.0, &s, &c);
-		motor->m_observer_x1_override = c * conf_now->foc_motor_flux_linkage;
-		motor->m_observer_x2_override = s * conf_now->foc_motor_flux_linkage;
+		float flux_linkage = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage;
+		motor->m_observer_x1_override = c * flux_linkage;
+		motor->m_observer_x2_override = s * flux_linkage;
 	} else {
 		motor->m_phase_now_observer_override = motor->m_phase_now_observer;
 		motor->m_phase_observer_override = false;
@@ -4031,7 +4043,8 @@ static void timer_update(motor_all_state_t *motor, float dt) {
 				(motor->m_motor_state.i_alpha * motor->m_motor_state.v_alpha + motor->m_motor_state.i_beta * motor->m_motor_state.v_beta));
 		motor->m_r_est_state += res_dot * dt;
 
-		utils_truncate_number((float*)&motor->m_r_est_state, conf_now->foc_motor_r * 0.25, conf_now->foc_motor_r * 3.0);
+		float motor_r = conf_now->foc_adaptive_enable ? mc_interface_get_adapted_resistance() : conf_now->foc_motor_r;
+		utils_truncate_number((float*)&motor->m_r_est_state, motor_r * 0.25, motor_r * 3.0);
 	}
 
 	// Current offset calibration if motor is undriven
@@ -4039,6 +4052,13 @@ static void timer_update(motor_all_state_t *motor, float dt) {
 		UTILS_LP_FAST(motor->m_conf->foc_offsets_current[0], motor->m_currents_adc[0], 0.0001);
 		UTILS_LP_FAST(motor->m_conf->foc_offsets_current[1], motor->m_currents_adc[1], 0.0001);
 		UTILS_LP_FAST(motor->m_conf->foc_offsets_current[2], motor->m_currents_adc[2], 0.0001);
+	}
+
+	// Update adaptive parameters, telemetry, and field optimization
+	if (motor == get_motor_now()) {
+		mc_interface_update_adaptive_params();
+		mc_interface_update_telemetry();
+		mc_interface_update_field_optimization();
 	}
 }
 
@@ -4160,8 +4180,9 @@ static void hfi_update(volatile motor_all_state_t *motor, float dt) {
 					if (motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI_START) {
 						float s, c;
 						utils_fast_sincos_better(angle_bin_2, &s, &c);
-						motor->m_observer_state.x1 = c * motor->m_conf->foc_motor_flux_linkage;
-						motor->m_observer_state.x2 = s * motor->m_conf->foc_motor_flux_linkage;
+						float flux_linkage = motor->m_conf->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : motor->m_conf->foc_motor_flux_linkage;
+						motor->m_observer_state.x1 = c * flux_linkage;
+						motor->m_observer_state.x2 = s * flux_linkage;
 					}
 				}
 
@@ -4334,6 +4355,22 @@ static void hfi_update(volatile motor_all_state_t *motor, float dt) {
 
 		motor->m_motor_state.id_target = 0.0;
 		motor->m_motor_state.id_override_hfi = false;
+	}
+	
+	// Enhanced HFI integration - update enhanced monitoring
+	if (motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI ||
+		motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI_V2 ||
+		motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI_V3 ||
+		motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI_V4 ||
+		motor->m_conf->foc_sensor_mode == FOC_SENSOR_MODE_HFI_V5) {
+		
+		// Update enhanced HFI monitoring system
+		mc_interface_update_enhanced_hfi();
+	}
+	
+	// Enhanced MTPA integration - update enhanced optimization
+	if (motor->m_conf->foc_mtpa_mode != MTPA_MODE_OFF) {
+		mc_interface_update_enhanced_mtpa();
 	}
 }
 
@@ -4508,16 +4545,24 @@ static void control_current(motor_all_state_t *motor, float dt) {
 	float Ierr_q = state_m->iq_target - state_m->iq;
 
 	float ki = conf_now->foc_current_ki;
+	float kp = conf_now->foc_current_kp;
+	
 	if (conf_now->foc_temp_comp) {
 		ki = motor->m_current_ki_temp_comp;
+	}
+	
+	// Use adaptive parameters if enabled
+	if (conf_now->foc_adaptive_enable) {
+		kp = mc_interface_get_adapted_kp();
+		ki = mc_interface_get_adapted_ki();
 	}
 
 	state_m->vd_int += Ierr_d * (ki * d_gain_scale * dt);
 	state_m->vq_int += Ierr_q * (ki * dt);
 
 	// Feedback (PI controller). No D action needed because the plant is a first order system (tf = 1/(Ls+R))
-	state_m->vd = state_m->vd_int + Ierr_d * conf_now->foc_current_kp * d_gain_scale;
-	state_m->vq = state_m->vq_int + Ierr_q * conf_now->foc_current_kp;
+	state_m->vd = state_m->vd_int + Ierr_d * kp * d_gain_scale;
+	state_m->vq = state_m->vq_int + Ierr_q * kp;
 
 	// Decoupling. Using feedforward this compensates for the fact that the equations of a PMSM
 	// are not really decoupled (the d axis current has impact on q axis voltage and visa-versa):
@@ -4536,13 +4581,13 @@ static void control_current(motor_all_state_t *motor, float dt) {
 			break;
 
 		case FOC_CC_DECOUPLING_BEMF:
-			dec_bemf = motor->m_speed_est_fast * conf_now->foc_motor_flux_linkage;
+			dec_bemf = motor->m_speed_est_fast * (conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage);
 			break;
 
 		case FOC_CC_DECOUPLING_CROSS_BEMF:
 			dec_vd = state_m->iq_filter * motor->m_speed_est_fast * motor->p_lq;
 			dec_vq = state_m->id_filter * motor->m_speed_est_fast * motor->p_ld;
-			dec_bemf = motor->m_speed_est_fast * conf_now->foc_motor_flux_linkage;
+			dec_bemf = motor->m_speed_est_fast * (conf_now->foc_adaptive_enable ? mc_interface_get_adapted_flux_linkage() : conf_now->foc_motor_flux_linkage);
 			break;
 
 		default:

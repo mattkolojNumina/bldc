@@ -151,6 +151,62 @@ float mc_interface_stat_temp_motor_max(void);
 float mc_interface_stat_count_time(void);
 void mc_interface_stat_reset(void);
 
+// Adaptive Parameter System
+void mc_interface_init_adaptive_params(void);
+void mc_interface_update_adaptive_params(void);
+adaptive_params_state_t mc_interface_get_adaptive_params_state(void);
+void mc_interface_set_adaptive_params_enable(bool enable);
+bool mc_interface_get_adaptive_params_enable(void);
+float mc_interface_get_adapted_kp(void);
+float mc_interface_get_adapted_ki(void);
+float mc_interface_get_adapted_resistance(void);
+float mc_interface_get_adapted_flux_linkage(void);
+
+// Enhanced Telemetry System
+void mc_interface_init_telemetry(void);
+void mc_interface_update_telemetry(void);
+hub_motor_telemetry_t mc_interface_get_hub_motor_telemetry(void);
+void mc_interface_set_telemetry_enable(bool enable);
+bool mc_interface_get_telemetry_enable(void);
+void mc_interface_send_telemetry(void);
+performance_metrics_t mc_interface_calculate_performance_metrics(void);
+
+// Field Optimization System
+void mc_interface_init_field_optimization(void);
+void mc_interface_update_field_optimization(void);
+field_optimization_state_t mc_interface_get_field_optimization_state(void);
+void mc_interface_set_field_optimization_enable(bool enable);
+bool mc_interface_get_field_optimization_enable(void);
+void mc_interface_add_optimization_sample(void);
+void mc_interface_run_parameter_optimization(void);
+float mc_interface_calculate_performance_score(void);
+
+// Enhanced HFI sensorless control functions
+void mc_interface_init_enhanced_hfi(void);
+void mc_interface_update_enhanced_hfi(void);
+enhanced_hfi_data_t mc_interface_get_enhanced_hfi_data(void);
+void mc_interface_set_hfi_voltage_adaptation(bool enable);
+float mc_interface_get_hfi_signal_quality(void);
+void mc_interface_reset_hfi_calibration(void);
+
+// Enhanced MTPA optimization functions
+void mc_interface_init_enhanced_mtpa(void);
+void mc_interface_update_enhanced_mtpa(void);
+enhanced_mtpa_data_t mc_interface_get_enhanced_mtpa_data(void);
+void mc_interface_set_mtpa_temperature_compensation(bool enable);
+void mc_interface_set_mtpa_nonlinear_optimization(bool enable);
+float mc_interface_calculate_mtpa_efficiency_gain(void);
+void mc_interface_reset_mtpa_optimization(void);
+
+// Enhanced field weakening functions
+void mc_interface_init_enhanced_field_weakening(void);
+void mc_interface_update_enhanced_field_weakening(void);
+enhanced_field_weakening_data_t mc_interface_get_enhanced_field_weakening_data(void);
+void mc_interface_set_field_weakening_two_stage(bool enable);
+void mc_interface_set_field_weakening_mtpv(bool enable);
+float mc_interface_calculate_field_weakening_efficiency(void);
+void mc_interface_reset_field_weakening_optimization(void);
+
 // MC implementation functions
 void mc_interface_set_fault_info(const char *str, int argn, float arg0, float arg1);
 void mc_interface_fault_stop(mc_fault_code fault, bool is_second_motor, bool is_isr);

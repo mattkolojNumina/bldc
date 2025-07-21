@@ -318,4 +318,24 @@
 #define MCCONF_M_MOTOR_TEMP_SENS_TYPE 1
 #define MCCONF_M_BATT_FILTER_CONST 70
 
+// Adaptive Parameter System Configuration
+#define MCCONF_FOC_ADAPTIVE_ENABLE 1                     // Enable adaptive parameters
+#define MCCONF_FOC_ADAPTIVE_KP_TEMP_COEFF 0.8            // Kp temperature coefficient (0.8% per °C)
+#define MCCONF_FOC_ADAPTIVE_KI_TEMP_COEFF 0.6            // Ki temperature coefficient (0.6% per °C)
+#define MCCONF_FOC_ADAPTIVE_RESISTANCE_TEMP_COEFF 0.393  // Resistance temperature coefficient (0.393% per °C for copper)
+#define MCCONF_FOC_ADAPTIVE_FLUX_TEMP_COEFF 0.1          // Flux linkage temperature coefficient (0.1% per °C)
+#define MCCONF_FOC_ADAPTIVE_TEMP_REFERENCE 25.0          // Reference temperature (25°C)
+#define MCCONF_FOC_ADAPTIVE_PARAM_LPF_TAU 2.0            // Low-pass filter time constant (2 seconds)
+
+// Enhanced Telemetry System Configuration
+#define MCCONF_TELEMETRY_ENABLE 1                        // Enable telemetry
+#define MCCONF_TELEMETRY_RATE_HZ 10                      // Telemetry update rate (10 Hz)
+#define MCCONF_TELEMETRY_CAN_ID 0x101                    // CAN ID for telemetry
+
+// Field Optimization System Configuration
+#define MCCONF_FIELD_OPTIMIZATION_ENABLE 1               // Enable field optimization
+#define MCCONF_FIELD_OPTIMIZATION_SAMPLES 50             // Number of samples for optimization
+#define MCCONF_FIELD_OPTIMIZATION_LEARNING_RATE 0.01     // Learning rate for optimization
+#define MCCONF_FIELD_OPTIMIZATION_UPDATE_RATE_HZ 1       // Optimization update rate (1 Hz)
+
 #endif /* MCCONF_BAFANG_500W_HUB_H_ */

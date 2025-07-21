@@ -34,7 +34,7 @@
 
 // Motor configuration overrides for optimized Bafang operation
 #define MCCONF_FOC_F_ZV					20000.0    // Research-optimized 20kHz switching frequency
-#define MCCONF_L_MAX_ABS_CURRENT		120.0      // Conservative absolute current for hub motor
+#define MCCONF_L_MAX_ABS_CURRENT		150.0      // Optimized absolute current for hub motor
 
 // Dead time optimization for hub motor efficiency  
 #define HW_DEAD_TIME_NSEC		400.0          // Optimized dead time for hub motor
@@ -42,8 +42,8 @@
 // Current limits for Bafang hub motor with FSESC_75_200_ALU
 // FSESC_75_200_ALU capability: 200A continuous at 50V, 150A at 75V, 300A peak
 // Bafang optimization: Conservative limits for thermal safety and longevity
-#define HW_LIM_CURRENT			-100.0, 100.0  // Phase current (100A for 1000W operation)
-#define HW_LIM_CURRENT_IN		-70.0, 70.0    // Battery current (70A for 1000W @ 48V) 
-#define HW_LIM_CURRENT_ABS		0.0, 150.0     // Absolute current (within FSESC safe limits)
+#define HW_LIM_CURRENT			-120.0, 120.0  // Phase current (120A for optimized 1000W operation)
+#define HW_LIM_CURRENT_IN		-80.0, 80.0    // Battery current (80A for optimized 1000W @ 48V) 
+#define HW_LIM_CURRENT_ABS		0.0, 180.0     // Absolute current (optimized within FSESC safe limits)
 
 #endif /* HW_BAFANG_500W_HUB_H_ */
